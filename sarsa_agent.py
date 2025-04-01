@@ -11,12 +11,15 @@ RED = 4
 
 # Aktionen (Indizes)
 UP = 0
-DOWN = 1
-LEFT = 2
-RIGHT = 3
-ACTIONS = [UP, DOWN, LEFT, RIGHT]
-ACTION_MAP = {UP: (-1, 0), DOWN: (1, 0), LEFT: (0, -1), RIGHT: (0, 1)} # (d_row, d_col)
-ACTION_NAMES = {UP: "UP", DOWN: "DOWN", LEFT: "LEFT", RIGHT: "RIGHT"} # For printing
+RIGHT = 1
+DOWN = 2
+LEFT = 3
+# Aktionen als Liste
+ACTIONS = [UP, RIGHT, DOWN, LEFT] # Indices 0, 1, 2, 3
+# Mapping von Aktion zu (delta_row, delta_col)
+ACTION_MAP = {UP: (-1, 0), RIGHT: (0, 1), DOWN: (1, 0), LEFT: (0, -1)} # (d_row, d_col)
+# Namen der Aktionen für die Ausgabe
+ACTION_NAMES = {UP: "UP", RIGHT: "RIGHT", DOWN: "DOWN", LEFT: "LEFT"} # For printing
 
 # Belohnungen
 REWARD_DEFAULT = -10
@@ -74,6 +77,9 @@ def step(state, action, board, goal_pos):
                is_done (bool): Ob das Ziel erreicht wurde.
     """
     row, col = state
+    # Checkt ob action gültig ist bevor es benutzt wird
+    if action not in ACTION_MAP:
+        raise ValueError(f"Unbekannte Aktion: {action}")
     d_row, d_col = ACTION_MAP[action]
     next_row, next_col = row + d_row, col + d_col
 
@@ -110,20 +116,19 @@ def step(state, action, board, goal_pos):
 class SarsaAgent:
     def __init__(self, states_shape, n_actions, alpha=0.05, gamma=0.99, epsilon=0.5, epsilon_decay=0.9995, epsilon_min=0.3):
         self.n_actions = n_actions
-        # Q-Tabelle: Dimensionen des Boards + Anzahl Aktionen
+        # Q-Tabelle mit Dimensionen (rows, cols, num_actions)
         self.q_table = np.zeros(states_shape + (n_actions,))
-        self.alpha = alpha       # Lernrate
-        self.gamma = gamma       # Diskontierungsfaktor
-        self.epsilon = epsilon     # Explorationsrate
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
     def choose_action(self, state):
-        """Wählt eine Aktion mittels Epsilon-Greedy-Strategie."""
+        """Wählt die beste Aktion basierend auf den Q-Werten (gierig)."""
         row, col = state
-        # Wähle beste bekannte Aktion
         return np.argmax(self.q_table[row, col])
-        
+
     def choose_action_e_greedy(self, state):
         """Wählt eine Aktion mittels Epsilon-Greedy-Strategie."""
         row, col = state
@@ -138,7 +143,6 @@ class SarsaAgent:
         """Aktualisiert die Q-Tabelle gemäß der SARSA-Update-Regel."""
         row, col = state
         next_row, next_col = next_state
-
         current_q = self.q_table[row, col, action]
         next_q = self.q_table[next_row, next_col, next_action]
         target_q = reward + self.gamma * next_q
@@ -146,24 +150,28 @@ class SarsaAgent:
         self.q_table[row, col, action] = new_q
 
     def decay_epsilon(self):
-        """Reduziert Epsilon, aber nicht unter das Minimum."""
+        """Reduziert Epsilon."""
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
 # --- Haupt-Trainingslogik ---
 def train():
     try:
+        # Ensure environment loads a 16x16 board
         board, start_pos, goal_pos = load_environment()
+        if board.shape != (GRID_ROWS, GRID_COLS):
+             raise ValueError(f"Loaded board shape {board.shape} does not match GRID_ROWS/COLS ({GRID_ROWS},{GRID_COLS})")
     except (FileNotFoundError, ValueError) as e:
         print(f"Fehler beim Initialisieren der Umgebung: {e}")
         return
 
     agent = SarsaAgent(states_shape=board.shape, n_actions=len(ACTIONS))
 
-    num_episodes = 1750 # Anzahl der Trainings-Episoden
-    max_steps_per_episode = 1000 # Max Schritte pro Episode, um Endlosschleifen zu vermeiden
+    num_episodes = 1750 # Keep previous value or adjust as needed
+    # Increase max_steps for larger grid
+    max_steps_per_episode = 500 # Max Schritte pro Episode, um Endlosschleifen zu vermeiden
 
-    print(f"\nStarte Training über {num_episodes} Episoden (alpha={agent.alpha}, decay={agent.epsilon_decay})...")
+    print(f"\nStarte Training über {num_episodes} Episoden (alpha={agent.alpha}, decay={agent.epsilon_decay}) für {GRID_ROWS}x{GRID_COLS} Grid...")
 
     for episode in range(num_episodes):
         state = start_pos
@@ -193,10 +201,6 @@ def train():
 
     print("\nTraining abgeschlossen.")
 
-    # Optional: Q-Tabelle speichern oder Pfad anzeigen
-    # np.save('q_table_sarsa.npy', agent.q_table)
-    # print("Q-Tabelle gespeichert in q_table_sarsa.npy")
-
     # Zeige den gelernten Pfad (optional)
     print("\nDetaillierter Beispielpfad vom Start zum Ziel (State -> Action -> Reward -> NextState):")
     state = start_pos
@@ -207,7 +211,7 @@ def train():
 
     while state != goal_pos and steps < max_steps_per_episode:
         current_state = state
-        # Beste Aktion wählen (kein Epsilon)
+        # Beste Aktion wählen (gierig)
         action = np.argmax(agent.q_table[current_state[0], current_state[1]])
         # Nächsten Zustand und Reward holen
         next_state, reward, _, is_done = step(current_state, action, board, goal_pos)
@@ -250,6 +254,22 @@ def train():
 
     np.save('board_with_path.npy', board_with_path)
     print(f"Board mit Pfad gespeichert in 'board_with_path.npy'")
+
+    # --- Q-Tabelle speichern (VEREINFACHT) ---
+    print("\nSpeichere Q-Tabelle...")
+    # Die Q-Tabelle hat die finale Struktur [GRID_ROWS, GRID_COLS, N_ACTIONS]
+    try:
+        q_table_to_save = agent.q_table
+
+        # Überprüfe die Dimensionen (sollte 16, 16, 4 sein)
+        if q_table_to_save.shape != (GRID_ROWS, GRID_COLS, len(ACTIONS)):
+            print(f"Warnung: Unerwartete Q-Tabellen-Dimension beim Speichern: {q_table_to_save.shape}")
+
+        # Speichere die Tabelle direkt
+        np.save('q_table_final.npy', q_table_to_save)
+        print(f"Q-Tabelle (Shape: {q_table_to_save.shape}, Aktionen: UP, RIGHT, DOWN, LEFT) gespeichert in 'q_table_final.npy'")
+    except Exception as e:
+        print(f"Fehler beim Speichern der Q-Tabelle: {e}")
 
 
 if __name__ == "__main__":

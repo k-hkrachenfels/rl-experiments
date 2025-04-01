@@ -2,6 +2,7 @@ import numpy as np
 import pygame
 import sys
 import os
+import math # Import für Pfeilspitzen
 # serializer wird nicht mehr direkt hier verwendet, da wir das Board mit Pfad separat laden
 # from serializer import save_board, load_board
 
@@ -14,48 +15,72 @@ RED = 4
 PATH_MARKER = 6 # Für den Pfad
 GRAY = (128, 128, 128) # Farbe für den Pfad
 NUM_COLORS = 5 # Anzahl der Farben zum Durchschalten
+ARROW_COLOR = (100, 0, 0) # Dunkelrot für Pfeile
+ARROW_THICKNESS = 2
 
 # --- Board Laden/Speichern (vereinfacht, da sarsa_agent die Pfad-Datei erstellt) ---
 BOARD_FILE_ORIGINAL = 'board_save.npy' # Original vom Editor
 BOARD_FILE_WITH_PATH = 'board_with_path.npy' # Vom Agenten generiert
 BOARD_FILE = 'board_save.npy'
+Q_TABLE_FILE = 'q_table_final.npy' # Datei für Q-Werte
 
-def load_editor_viewer_board():
+def load_editor_viewer_data():
     """
-    Lädt Board für Editor/Viewer (16x16).
-    Prioritisiert Pfad-Datei für initialen View, dann Editor-Datei, dann neu.
-    Returns: tuple (board_state: np.ndarray, path_was_loaded: bool)
+    Lädt Board und Q-Tabelle für Editor/Viewer (16x16).
+    Prioritisiert Pfad-Datei für initialen Board-View.
+    Returns: tuple (board_state, path_was_loaded, q_table)
     """
+    board_state = None
     path_loaded = False
-    # 1. Versuche Pfad-Datei zu laden
+    q_table = None
+
+    # 1. Versuche Pfad-Board zu laden
     if os.path.exists(BOARD_FILE_WITH_PATH):
         print(f"Versuche, Pfad-Board zu laden: {BOARD_FILE_WITH_PATH}")
         try:
-            board = np.load(BOARD_FILE_WITH_PATH)
-            if board.shape == (16, 16):
+            loaded_board = np.load(BOARD_FILE_WITH_PATH)
+            if loaded_board.shape == (16, 16):
                 print("Pfad-Board geladen.")
-                return board, True # Pfad-Board zurückgeben
+                board_state = loaded_board
+                path_loaded = True
             else:
-                print(f"Warnung: Pfad-Board hat falsche Dimensionen ({board.shape}). Ignoriere.")
+                print(f"Warnung: Pfad-Board hat falsche Dimensionen ({loaded_board.shape}). Ignoriere.")
         except Exception as e:
             print(f"Fehler beim Laden von {BOARD_FILE_WITH_PATH}: {e}. Ignoriere.")
 
-    # 2. Wenn Pfad nicht geladen, versuche Editor-Datei
-    if os.path.exists(BOARD_FILE):
+    # 2. Wenn Pfad nicht geladen, versuche normales Editor-Board
+    if board_state is None and os.path.exists(BOARD_FILE):
         print(f"Lade Editor-Board: {BOARD_FILE}")
         try:
-            board = np.load(BOARD_FILE)
-            if board.shape == (16, 16):
+            loaded_board = np.load(BOARD_FILE)
+            if loaded_board.shape == (16, 16):
                 print("Editor-Board geladen.")
-                return board, False # Editor-Board zurückgeben
+                board_state = loaded_board
             else:
-                print(f"Warnung: Editor-Board hat falsche Dimensionen ({board.shape}). Erstelle neues Board.")
+                print(f"Warnung: Editor-Board hat falsche Dimensionen ({loaded_board.shape}). Erstelle neues Board.")
         except Exception as e:
             print(f"Fehler beim Laden von {BOARD_FILE}: {e}. Erstelle neues Board.")
 
-    # 3. Wenn beides fehlschlägt, erstelle neues Board
-    print("Keine gültige Board-Datei gefunden. Erstelle neues leeres 16x16 Board.")
-    return np.zeros((16, 16), dtype=int), False # Neues Board zurückgeben
+    # 3. Wenn immer noch kein Board, erstelle neues
+    if board_state is None:
+        print("Keine gültige Board-Datei gefunden. Erstelle neues leeres 16x16 Board.")
+        board_state = np.zeros((16, 16), dtype=int)
+
+    # 4. Versuche Q-Tabelle zu laden
+    if os.path.exists(Q_TABLE_FILE):
+        print(f"Versuche Q-Tabelle zu laden: {Q_TABLE_FILE}")
+        try:
+            loaded_q = np.load(Q_TABLE_FILE)
+            # Erwarte Shape (16, 16, 4)
+            if loaded_q.shape == (16, 16, 4):
+                q_table = loaded_q
+                print("Q-Tabelle erfolgreich geladen.")
+            else:
+                print(f"Warnung: Geladene Q-Tabelle hat falsche Dimensionen ({loaded_q.shape}). Erwartet (16, 16, 4).")
+        except Exception as e:
+            print(f"Fehler beim Laden der Q-Tabelle ({Q_TABLE_FILE}): {e}")
+
+    return board_state, path_loaded, q_table
 
 def load_board():
     """Lädt das Board aus BOARD_FILE oder erstellt ein neues."""
@@ -103,14 +128,14 @@ class BoardEditorViewer: # Umbenannt
 
         # Erstelle das Fenster
         self.screen = pygame.display.set_mode((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
-        pygame.display.set_caption("Board Editor/Viewer (16x16)") # Titel angepasst
+        pygame.display.set_caption("Board Editor/Viewer mit Q-Werten (16x16)") # Titel angepasst
 
         # Lade initialen Zustand (priorisiert Pfad)
-        self.board_state, self.path_initially_loaded = load_editor_viewer_board()
-        if self.path_initially_loaded:
-             print("Anzeige: Pfad-Board initial geladen.")
+        self.board_state, self.path_initially_loaded, self.q_table = load_editor_viewer_data()
+        if self.q_table is not None:
+            print("Anzeige: Q-Werte werden visualisiert.")
         else:
-             print("Anzeige: Editor-Board oder neues Board geladen.")
+            print("Anzeige: Keine Q-Werte gefunden/geladen.")
 
         # Erstelle den Button
         self.button_rect = pygame.Rect(
@@ -152,6 +177,64 @@ class BoardEditorViewer: # Umbenannt
                 pygame.draw.line(self.screen, (0, 0, 0), (x1, y1 + self.FIELD_SIZE), (x1 + self.FIELD_SIZE, y1 + self.FIELD_SIZE), 1)
                 pygame.draw.line(self.screen, (0, 0, 0), (x1, y1), (x1, y1 + self.FIELD_SIZE), 1)
                 pygame.draw.line(self.screen, (0, 0, 0), (x1 + self.FIELD_SIZE, y1), (x1 + self.FIELD_SIZE, y1 + self.FIELD_SIZE), 1)
+
+                # --- Zeichne Q-Wert-Vektor --- 
+                if self.q_table is not None:
+                    try:
+                        q_vals = self.q_table[i, j]
+
+                        # Softmax Normalisierung für Wahrscheinlichkeiten
+                        # Subtrahiere Max für numerische Stabilität
+                        stable_q = q_vals - np.max(q_vals)
+                        exp_q = np.exp(stable_q)
+                        probs = exp_q / np.sum(exp_q)
+
+                        # Handle NaN, falls Summe 0 ist (sollte nicht oft passieren)
+                        if np.isnan(probs).any():
+                             continue
+
+                        # Aktionen: UP=0, RIGHT=1, DOWN=2, LEFT=3
+                        p_up, p_right, p_down, p_left = probs
+
+                        # Berechne Vektorkomponenten
+                        dx = p_right - p_left
+                        dy = p_down - p_up # Pygame Y ist unten positiv
+
+                        # Zeichne Vektor vom Zentrum
+                        center_x = x1 + self.FIELD_SIZE / 2
+                        center_y = y1 + self.FIELD_SIZE / 2
+                        # Max Länge etwas kleiner als halbes Feld
+                        max_len_comp = self.FIELD_SIZE / 2.5 
+
+                        end_x = center_x + dx * max_len_comp
+                        end_y = center_y + dy * max_len_comp
+
+                        # Zeichne Pfeillinie
+                        pygame.draw.line(self.screen, ARROW_COLOR, (center_x, center_y), (end_x, end_y), ARROW_THICKNESS)
+
+                        # Zeichne Pfeilspitze (nur wenn Vektor nicht Null ist)
+                        if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                            angle = math.atan2(dy, dx)
+                            arrow_len = 5 
+                            arrow_angle = math.pi / 6 # 30 Grad
+
+                            # Punkt 1 der Spitze
+                            px1 = end_x - arrow_len * math.cos(angle - arrow_angle)
+                            py1 = end_y - arrow_len * math.sin(angle - arrow_angle)
+                            pygame.draw.line(self.screen, ARROW_COLOR, (end_x, end_y), (px1, py1), ARROW_THICKNESS)
+
+                            # Punkt 2 der Spitze
+                            px2 = end_x - arrow_len * math.cos(angle + arrow_angle)
+                            py2 = end_y - arrow_len * math.sin(angle + arrow_angle)
+                            pygame.draw.line(self.screen, ARROW_COLOR, (end_x, end_y), (px2, py2), ARROW_THICKNESS)
+
+                    except IndexError:
+                        # Sollte nicht passieren, wenn Q-Table korrekte Dim hat
+                        pass # Ignoriere Fehler für diese Zelle
+                    except Exception as e:
+                        # Fange andere Fehler ab (z.B. math domain error)
+                        # print(f"Error drawing Q-vector at ({i},{j}): {e}")
+                        pass # Ignoriere Fehler für diese Zelle
 
         # Zeichne den Button
         pygame.draw.rect(self.screen, (220, 220, 220), self.button_rect)
