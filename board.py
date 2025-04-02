@@ -2,7 +2,8 @@ import numpy as np
 import pygame
 import sys
 import os
-import math # Import für Pfeilspitzen
+import math
+import glob
 # serializer wird nicht mehr direkt hier verwendet, da wir das Board mit Pfad separat laden
 # from serializer import save_board, load_board
 
@@ -22,23 +23,58 @@ ARROW_THICKNESS = 2
 BOARD_FILE_ORIGINAL = 'board_save.npy' # Original vom Editor
 BOARD_FILE_WITH_PATH = 'board_with_path.npy' # Vom Agenten generiert
 BOARD_FILE = 'board_save.npy'
-Q_TABLE_FILE = 'q_table_final.npy' # Datei für Q-Werte
+Q_TABLE_FILE = 'q_table_final.npy'
+
+def load_all_path_files():
+    """
+    Lädt alle verfügbaren Pfad-Dateien und sortiert sie nach Episodennummer.
+    Returns: Liste von (episode_number, file_path) Tupeln
+    """
+    # Finde alle Pfad-Dateien
+    path_files = glob.glob('board_with_path_*.npy')
+    
+    # Extrahiere Episodennummern und erstelle Tupel
+    path_data = []
+    for file in path_files:
+        try:
+            # Extrahiere die Nummer aus dem Dateinamen (board_with_path_000100.npy -> 100)
+            episode_num = int(file.split('_')[-1].split('.')[0])
+            path_data.append((episode_num, file))
+        except (ValueError, IndexError):
+            # Ignoriere Dateien, die nicht dem erwarteten Format entsprechen
+            continue
+    
+    # Sortiere nach Episodennummer
+    path_data.sort(key=lambda x: x[0])
+    
+    # Füge die finale Pfad-Datei hinzu, falls vorhanden
+    if os.path.exists(BOARD_FILE_WITH_PATH):
+        path_data.append((float('inf'), BOARD_FILE_WITH_PATH))  # Unendlich für finale Version
+    
+    return path_data
 
 def load_editor_viewer_data():
     """
     Lädt Board und Q-Tabelle für Editor/Viewer (16x16).
     Prioritisiert Pfad-Datei für initialen Board-View.
-    Returns: tuple (board_state, path_was_loaded, q_table)
+    Returns: tuple (board_state, path_was_loaded, q_table, path_files)
     """
     board_state = None
     path_loaded = False
     q_table = None
+    path_files = load_all_path_files()
 
     # 1. Versuche Pfad-Board zu laden
-    if os.path.exists(BOARD_FILE_WITH_PATH):
-        print(f"Versuche, Pfad-Board zu laden: {BOARD_FILE_WITH_PATH}")
+    if path_files:
+        print(f"Gefundene Pfad-Dateien: {len(path_files)}")
+        for episode_num, file in path_files:
+            print(f"  Episode {episode_num}: {file}")
+        
+        # Lade die erste Pfad-Datei
+        _, first_path_file = path_files[0]
+        print(f"\nLade erste Pfad-Datei: {first_path_file}")
         try:
-            loaded_board = np.load(BOARD_FILE_WITH_PATH)
+            loaded_board = np.load(first_path_file)
             if loaded_board.shape == (16, 16):
                 print("Pfad-Board geladen.")
                 board_state = loaded_board
@@ -46,7 +82,7 @@ def load_editor_viewer_data():
             else:
                 print(f"Warnung: Pfad-Board hat falsche Dimensionen ({loaded_board.shape}). Ignoriere.")
         except Exception as e:
-            print(f"Fehler beim Laden von {BOARD_FILE_WITH_PATH}: {e}. Ignoriere.")
+            print(f"Fehler beim Laden von {first_path_file}: {e}. Ignoriere.")
 
     # 2. Wenn Pfad nicht geladen, versuche normales Editor-Board
     if board_state is None and os.path.exists(BOARD_FILE):
@@ -80,7 +116,7 @@ def load_editor_viewer_data():
         except Exception as e:
             print(f"Fehler beim Laden der Q-Tabelle ({Q_TABLE_FILE}): {e}")
 
-    return board_state, path_loaded, q_table
+    return board_state, path_loaded, q_table, path_files
 
 def load_board():
     """Lädt das Board aus BOARD_FILE oder erstellt ein neues."""
@@ -110,7 +146,7 @@ def save_board(board_state):
     except Exception as e:
         print(f"Fehler beim Speichern von {BOARD_FILE}: {e}")
 
-class BoardEditorViewer: # Umbenannt
+class BoardEditorViewer:
     def __init__(self):
         # Konstanten für das Brett (16x16)
         self.FIELD_SIZE = 30
@@ -121,26 +157,35 @@ class BoardEditorViewer: # Umbenannt
         self.MARGIN = 20
         self.BUTTON_HEIGHT = 40
         self.WINDOW_WIDTH = self.BOARD_WIDTH + 2*self.MARGIN
-        self.WINDOW_HEIGHT = self.BOARD_HEIGHT + 2*self.MARGIN + self.BUTTON_HEIGHT
+        self.WINDOW_HEIGHT = self.BOARD_HEIGHT + 2*self.MARGIN + 2*self.BUTTON_HEIGHT + 10  # Extra Höhe für zweiten Button
 
         # Initialisiere Pygame
         pygame.init()
 
         # Erstelle das Fenster
         self.screen = pygame.display.set_mode((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
-        pygame.display.set_caption("Board Editor/Viewer mit Q-Werten (16x16)") # Titel angepasst
+        pygame.display.set_caption("Board Editor/Viewer mit Q-Werten (16x16)")
 
         # Lade initialen Zustand (priorisiert Pfad)
-        self.board_state, self.path_initially_loaded, self.q_table = load_editor_viewer_data()
+        self.board_state, self.path_initially_loaded, self.q_table, self.path_files = load_editor_viewer_data()
+        self.current_path_index = 0 if self.path_files else -1
+        
         if self.q_table is not None:
             print("Anzeige: Q-Werte werden visualisiert.")
         else:
             print("Anzeige: Keine Q-Werte gefunden/geladen.")
 
-        # Erstelle den Button
-        self.button_rect = pygame.Rect(
+        # Erstelle die Buttons
+        self.save_button_rect = pygame.Rect(
             self.MARGIN,
             self.BOARD_HEIGHT + 2*self.MARGIN,
+            self.BOARD_WIDTH,
+            self.BUTTON_HEIGHT
+        )
+        
+        self.next_path_button_rect = pygame.Rect(
+            self.MARGIN,
+            self.BOARD_HEIGHT + 3*self.MARGIN + self.BUTTON_HEIGHT,
             self.BOARD_WIDTH,
             self.BUTTON_HEIGHT
         )
@@ -152,8 +197,36 @@ class BoardEditorViewer: # Umbenannt
             BLUE: (0, 0, 255),
             GREEN: (0, 255, 0),
             RED: (255, 0, 0),
-            PATH_MARKER: GRAY # Pfadfarbe wieder hinzugefügt
+            PATH_MARKER: GRAY
         }
+
+    def load_path_file(self, file_path):
+        """Lädt eine Pfad-Datei und aktualisiert das Board."""
+        try:
+            loaded_board = np.load(file_path)
+            if loaded_board.shape == (16, 16):
+                # Erstelle eine Kopie des Original-Boards
+                original_board = np.load(BOARD_FILE)
+                # Setze nur die Pfadmarker (6) auf dem Original-Board
+                self.board_state = np.where(loaded_board == PATH_MARKER, PATH_MARKER, original_board)
+                return True
+            else:
+                print(f"Warnung: Pfad-Board hat falsche Dimensionen ({loaded_board.shape}).")
+                return False
+        except Exception as e:
+            print(f"Fehler beim Laden von {file_path}: {e}")
+            return False
+
+    def next_path(self):
+        """Wechselt zum nächsten Pfad in der Liste."""
+        if not self.path_files:
+            return
+        
+        self.current_path_index = (self.current_path_index + 1) % len(self.path_files)
+        episode_num, file_path = self.path_files[self.current_path_index]
+        
+        if self.load_path_file(file_path):
+            print(f"Geladen: Episode {episode_num}")
 
     def draw_board(self):
         # Fülle den Hintergrund
@@ -233,29 +306,42 @@ class BoardEditorViewer: # Umbenannt
                         pass # Ignoriere Fehler für diese Zelle
                     except Exception as e:
                         # Fange andere Fehler ab (z.B. math domain error)
-                        # print(f"Error drawing Q-vector at ({i},{j}): {e}")
                         pass # Ignoriere Fehler für diese Zelle
 
-        # Zeichne den Button
-        pygame.draw.rect(self.screen, (220, 220, 220), self.button_rect)
-        pygame.draw.rect(self.screen, (0, 0, 0), self.button_rect, 2)
-
-        # Text für den Button
+        # Zeichne die Buttons
+        # Speichern-Button
+        pygame.draw.rect(self.screen, (220, 220, 220), self.save_button_rect)
+        pygame.draw.rect(self.screen, (0, 0, 0), self.save_button_rect, 2)
         font = pygame.font.Font(None, 30)
         text = font.render("Speichern & Beenden", True, (0, 0, 0))
-        text_rect = text.get_rect(center=self.button_rect.center)
+        text_rect = text.get_rect(center=self.save_button_rect.center)
+        self.screen.blit(text, text_rect)
+
+        # Nächster Pfad-Button
+        pygame.draw.rect(self.screen, (220, 220, 220), self.next_path_button_rect)
+        pygame.draw.rect(self.screen, (0, 0, 0), self.next_path_button_rect, 2)
+        if self.path_files:
+            episode_num, _ = self.path_files[self.current_path_index]
+            text = font.render(f"Nächster Pfad (Episode {episode_num})", True, (0, 0, 0))
+        else:
+            text = font.render("Keine Pfade verfügbar", True, (0, 0, 0))
+        text_rect = text.get_rect(center=self.next_path_button_rect.center)
         self.screen.blit(text, text_rect)
 
         # Aktualisiere die Anzeige
         pygame.display.flip()
 
     def handle_click(self, pos):
-        # Prüfe, ob der Button geklickt wurde
-        if self.button_rect.collidepoint(pos):
-            save_board(self.board_state) # Speichert IMMER in board_save.npy
+        # Prüfe, ob der Speichern-Button geklickt wurde
+        if self.save_button_rect.collidepoint(pos):
+            save_board(self.board_state)
             print("\nBoard-Zustand gespeichert.")
-            # print(self.board_state) # Optional: Matrix anzeigen
             return True # Signal zum Beenden
+
+        # Prüfe, ob der Nächster-Pfad-Button geklickt wurde
+        if self.next_path_button_rect.collidepoint(pos):
+            self.next_path()
+            return False
 
         # Berechne die Feldkoordinaten aus den Mauskoordinaten
         x = pos[0] - self.MARGIN
@@ -271,8 +357,6 @@ class BoardEditorViewer: # Umbenannt
             next_color = (current_color + 1) % NUM_COLORS # Modulo 5 sorgt für 0-4
             self.board_state[row][col] = next_color
             print(f"Feld ({row}, {col}) geändert zu Zustand {next_color}")
-            # Optional: Flag setzen, dass Bearbeitung stattfand, falls benötigt
-            # self.edited = True
 
         return False # Nicht beenden
 
@@ -282,7 +366,6 @@ class BoardEditorViewer: # Umbenannt
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    # Hinweis: Schließen ohne Speichern
                     print("Fenster geschlossen ohne Speichern.")
                     running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN:
