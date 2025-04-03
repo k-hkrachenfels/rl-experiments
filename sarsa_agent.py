@@ -34,6 +34,13 @@ GRID_COLS = 16
 # --- Lade das Board ---
 BOARD_FILE = 'board_save.npy'
 
+# ANSI color codes für Konsolenausgabe
+ANSI_RED = '\033[91m'
+ANSI_GREEN = '\033[92m'
+ANSI_YELLOW = '\033[93m'
+ANSI_BLUE = '\033[94m'
+ANSI_RESET = '\033[0m'  # Reset color
+
 def load_environment():
     """Lädt das Board und findet Start/Ziel."""
     if not os.path.exists(BOARD_FILE):
@@ -115,7 +122,7 @@ def step(state, action, board, goal_pos):
 
 # --- SARSA Agent ---
 class SarsaAgent:
-    def __init__(self, states_shape, n_actions, alpha=0.05, gamma=0.99, epsilon=0.5, epsilon_decay=0.9995, epsilon_min=0.3):
+    def __init__(self, states_shape, n_actions, alpha=0.05, gamma=0.99, epsilon=0.5, epsilon_decay=0.9995, epsilon_min=0.01):
         self.n_actions = n_actions
         # Q-Tabelle mit Dimensionen (rows, cols, num_actions)
         self.q_table = np.zeros(states_shape + (n_actions,))
@@ -188,10 +195,8 @@ def save_results(board, agent, visualization_path, detailed_path_steps, start_po
             board_with_path[r, c] = PATH_MARKER
 
     np.save(output_file, board_with_path)
-    print(f"Board mit Pfad gespeichert in '{output_file}'")
 
     # Speichere die Q-Tabelle
-    print("\nSpeichere Q-Tabelle...")
     try:
         q_table_to_save = agent.q_table
 
@@ -201,29 +206,23 @@ def save_results(board, agent, visualization_path, detailed_path_steps, start_po
 
         # Speichere die Tabelle direkt
         np.save('q_table_final.npy', q_table_to_save)
-        print(f"Q-Tabelle (Shape: {q_table_to_save.shape}, Aktionen: UP, RIGHT, DOWN, LEFT) gespeichert in 'q_table_final.npy'")
     except Exception as e:
         print(f"Fehler beim Speichern der Q-Tabelle: {e}")
 
-def print_path_details(detailed_path_steps, total_path_reward):
+def print_path_details(episode_number, detailed_path_steps, total_path_reward):
     """
-    Gibt die Details des gefundenen Pfades aus.
+    Gibt die Details eines Pfades aus.
     
     Args:
-        detailed_path_steps (list): Liste der detaillierten Schritte (state, action, reward, next_state)
-        total_path_reward (int): Gesamter Reward des Pfades
+        episode_number (int): Nummer der Episode
+        detailed_path_steps (list or int): Liste der Schritte oder Anzahl der Schritte
+        total_path_reward (float): Gesamtreward des Pfades
     """
-    #print("\nDetaillierter Beispielpfad vom Start zum Ziel (State -> Action -> Reward -> NextState):")
-    
-    # Gib den detaillierten Pfad aus
-    #for i, (s, a, r, ns) in enumerate(detailed_path_steps):
-    #    print(f"    Schritt {i+1}: Zustand={s}, Aktion={ACTION_NAMES[a]}, Reward={r}, Nächster Zustand={ns}")
-
-    print(f"    Gesamt-Reward des Pfades: {total_path_reward}")
-    # print(f"    Pfad (nur Zustände): {visualization_path}") # Optional: Nur Zustandssequenz anzeigen
-
-    # Füge die neue Zusammenfassungszeile hinzu
-    print(f"\nZusammenfassung: Optimaler Pfad hat {len(detailed_path_steps)} Schritte mit Gesamt-Reward {total_path_reward}.")
+    if isinstance(detailed_path_steps, list):
+        steps = len(detailed_path_steps)
+    else:
+        steps = detailed_path_steps
+    print(f"{ANSI_RED}Val   {episode_number}, {steps} steps, Reward {total_path_reward}.{ANSI_RESET}")
 
 def find_optimal_path(agent, board, start_pos, goal_pos, max_steps_per_episode):
     """
@@ -264,17 +263,9 @@ def find_optimal_path(agent, board, start_pos, goal_pos, max_steps_per_episode):
         state = next_state
         steps += 1
 
-        if is_done:
-             print(f"    -> Ziel nach {steps} Schritten erreicht.")
-             break
-        elif steps >= max_steps_per_episode:
-            print("    -> Maximal Schritte erreicht, Ziel nicht gefunden.")
-            # Breche die Schleife ab, aber behalte die bisherigen Schritte
-            break
-
     return visualization_path, detailed_path_steps, total_path_reward
 
-def validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode_number=None):
+def validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode_number):
     """
     Führt die Validierung des trainierten Agenten durch:
     1. Findet den optimalen Pfad
@@ -289,10 +280,6 @@ def validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode_n
         max_steps_per_episode (int): Maximale Anzahl von Schritten pro Episode
         episode_number (int, optional): Nummer der aktuellen Episode für die Dateibenennung
     """
-    if episode_number is not None:
-        print(f"\nStarte Validierung nach Episode {episode_number + 1}...")
-    else:
-        print("\nStarte Validierung des trainierten Agenten...")
     
     # 1. Finde den optimalen Pfad
     visualization_path, detailed_path_steps, total_path_reward = find_optimal_path(
@@ -300,7 +287,7 @@ def validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode_n
     )
 
     # 2. Zeige die Details des Pfades an
-    print_path_details(detailed_path_steps, total_path_reward)
+    print_path_details(episode_number, detailed_path_steps, total_path_reward)
 
     # 3. Speichere die Ergebnisse
     if episode_number is not None:
@@ -308,14 +295,19 @@ def validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode_n
     else:
         output_file = 'board_with_path.npy'
     
+    # Speichere die Q-Tabelle und das Board mit dem Pfad
     save_results(board, agent, visualization_path, detailed_path_steps, start_pos, goal_pos, output_file)
     
-    if episode_number is not None:
-        print(f"\nValidierung nach Episode {episode_number + 1} abgeschlossen.")
-    else:
-        print("\nValidierung abgeschlossen.")
 
-def train():
+def train(num_episodes=4000, max_steps_per_episode=500, validate_interval=100):
+    """
+    Trainiert den SARSA-Agenten.
+    
+    Args:
+        num_episodes (int): Anzahl der Trainings-Episoden (Standard: 1750)
+        max_steps_per_episode (int): Maximale Schritte pro Episode (Standard: 500)
+        validate_interval (int): Intervall für Validierung in Episoden (Standard: 100)
+    """
     try:
         # Ensure environment loads a 16x16 board
         board, start_pos, goal_pos = load_environment()
@@ -331,10 +323,6 @@ def train():
 
     agent = SarsaAgent(states_shape=board.shape, n_actions=len(ACTIONS))
 
-    num_episodes = 1750 # Keep previous value or adjust as needed
-    # Increase max_steps for larger grid
-    max_steps_per_episode = 500 # Max Schritte pro Episode, um Endlosschleifen zu vermeiden
-
     print(f"\nStarte Training über {num_episodes} Episoden (alpha={agent.alpha}, decay={agent.epsilon_decay}) für {GRID_ROWS}x{GRID_COLS} Grid...")
 
     for episode in range(num_episodes):
@@ -342,11 +330,11 @@ def train():
         action = agent.choose_action_e_greedy(state)
         total_reward = 0
         steps = 0
-
+        if episode % validate_interval == 0:
+            # Führe Validierung vor jeder validate_interval-ten Episode durch, die erste Validierung erfolgt mit den initialen Q-Werten
+            validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode)
         while steps < max_steps_per_episode:
-            if episode % 100 == 0:
-                # Führe Validierung vor jeder 100. Episode durch
-                validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode)
+            
             steps += 1
             next_state, reward, moved, is_done = step(state, action, board, goal_pos)
             next_action = agent.choose_action(next_state) # Wichtig: Nächste Aktion für SARSA wählen
@@ -363,14 +351,13 @@ def train():
 
         agent.decay_epsilon() # Epsilon nach jeder Episode reduzieren
 
-        if (episode + 1) % 100 == 0:
-            print(f"Episode {episode + 1}/{num_episodes} abgeschlossen. Schritte mit epsilon-greedy: {steps}, Gesamt-Reward: {total_reward}, Epsilon: {agent.epsilon:.4f}")
-
+        if (episode ) % validate_interval == 0:
+            print(f"Train {episode}, {steps} steps, Reward: {total_reward}, Epsilon: {agent.epsilon:.4f}")
 
     print("\nTraining abgeschlossen.")
 
     # Führe die finale Validierung durch
-    validate(agent, board, start_pos, goal_pos, max_steps_per_episode)
+    validate(agent, board, start_pos, goal_pos, max_steps_per_episode, num_episodes)
 
 if __name__ == "__main__":
     train() 

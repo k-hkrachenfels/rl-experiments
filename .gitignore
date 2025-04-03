@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+board_with_path_*.npy
+
 #numpy data
 
 # Distribution / packaging
