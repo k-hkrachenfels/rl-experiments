@@ -1,363 +1,260 @@
+import glob
 import numpy as np
 import os
-import glob
 
-# --- Konstanten ---
-# Farben (aus board.py abgeleitet)
-WHITE = 0
-BLACK = 1
-BLUE = 2
-GREEN = 3
-RED = 4
+from abc import ABC, abstractmethod
+from config import Config, load_config, AgentType, GridState
+from dataclasses import dataclass
+from enum import Enum
+from persistence import load_board_and_find_start_goal, save_results, delete_old_files
+from typing import Tuple, List
+from util import IndexableEnumMeta
 
-# Aktionen (Indizes)
-UP = 0
-RIGHT = 1
-DOWN = 2
-LEFT = 3
-# Aktionen als Liste
-ACTIONS = [UP, RIGHT, DOWN, LEFT] # Indices 0, 1, 2, 3
-# Mapping von Aktion zu (delta_row, delta_col)
-ACTION_MAP = {UP: (-1, 0), RIGHT: (0, 1), DOWN: (1, 0), LEFT: (0, -1)} # (d_row, d_col)
-# Namen der Aktionen für die Ausgabe
-ACTION_NAMES = {UP: "UP", RIGHT: "RIGHT", DOWN: "DOWN", LEFT: "LEFT"} # For printing
+# an Enum that also supports indexing and applying len (by using specific metaclass)
+class Action(Enum, metaclass=IndexableEnumMeta):
+    UP    = (-1, 0)
+    RIGHT = (0, 1)
+    DOWN  = (1, 0)
+    LEFT  = (0, -1)   
 
-# Belohnungen
-REWARD_DEFAULT = -10
-REWARD_BLUE = -100000
-# REWARD_GOAL = -10 # Ziel (Grün) hat denselben Reward wie Weiß
-
-# Grid Größe (aus board.py abgeleitet)
-GRID_ROWS = 16
-GRID_COLS = 16
-
-# --- Lade das Board ---
-BOARD_FILE = 'board_save.npy'
-
-# ANSI color codes für Konsolenausgabe
-ANSI_RED = '\033[91m'
-ANSI_GREEN = '\033[92m'
-ANSI_YELLOW = '\033[93m'
-ANSI_BLUE = '\033[94m'
-ANSI_RESET = '\033[0m'  # Reset color
-
-def load_environment():
-    """Lädt das Board und findet Start/Ziel."""
-    if not os.path.exists(BOARD_FILE):
-        raise FileNotFoundError(f"Board-Datei '{BOARD_FILE}' nicht gefunden. Bitte erstelle sie (z.B. mit board.py).")
-    board = np.load(BOARD_FILE)
-    if board.shape != (GRID_ROWS, GRID_COLS):
-        raise ValueError(f"Board-Dimensionen in '{BOARD_FILE}' ({board.shape}) entsprechen nicht den erwarteten ({GRID_ROWS}, {GRID_COLS}).")
-
-    green_cells = np.argwhere(board == GREEN)
-    if len(green_cells) != 1:
-        raise ValueError("Es muss genau ein grünes Start-Feld auf dem Board gefunden werden.")
-    
-    red_cells = np.argwhere(board == RED)
-    if len(red_cells) != 1:
-        raise ValueError("Es muss genau ein rotes Ziel-Feld auf dem Board gefunden werden.")
-
-
-    start_pos = tuple(green_cells[0])
-    goal_pos = tuple(red_cells[0])
-
-    print(f"Board geladen ({GRID_ROWS}x{GRID_COLS}).")
-    print(f"Startposition (Grün): {start_pos}")
-    print(f"Zielposition (Rot): {goal_pos}")
-    return board, start_pos, goal_pos
-
-# --- Umgebungsinteraktion ---
-def step(state, action, board, goal_pos):
-    """
-    Führt eine Aktion im Zustand 'state' aus.
-
-    Args:
-        state (tuple): Aktuelle Position (row, col).
-        action (int): Auszuführende Aktion (UP, DOWN, LEFT, RIGHT).
-        board (np.ndarray): Das Spielfeld.
-        goal_pos (tuple): Die Zielposition.
-
-    Returns:
-        tuple: (next_state, reward, moved)
-               next_state (tuple): Die Position nach dem Zug (kann dieselbe sein).
-               reward (int): Die erhaltene Belohnung.
-               moved (bool): Ob der Agent sich tatsächlich bewegt hat.
-               is_done (bool): Ob das Ziel erreicht wurde.
-    """
-    row, col = state
-    # Checkt ob action gültig ist bevor es benutzt wird
-    if action not in ACTION_MAP:
-        raise ValueError(f"Unbekannte Aktion: {action}")
-    d_row, d_col = ACTION_MAP[action]
-    next_row, next_col = row + d_row, col + d_col
-
-    # Prüfe, ob die nächste Position im Grid liegt
-    if not (0 <= next_row < GRID_ROWS and 0 <= next_col < GRID_COLS):
-        # Außerhalb des Grids -> Bleibe stehen, Standard-Reward
-        return state, REWARD_DEFAULT, False, False
-
-    target_cell_color = board[next_row][next_col]
-    reward = REWARD_DEFAULT
-    moved = False
-    is_done = False
-
-    if target_cell_color == BLUE:
-        reward = REWARD_BLUE
-        next_state = state # Bleibe stehen
-        moved = False
-    elif target_cell_color == WHITE or target_cell_color == GREEN or target_cell_color == RED:
-        reward = REWARD_DEFAULT
-        next_state = (next_row, next_col) # Gehe zum Feld
-        moved = True
-        if next_state == goal_pos:
-            is_done = True # Ziel erreicht
-    elif target_cell_color == BLACK:
-        reward = REWARD_DEFAULT
-        next_state = state # Bleibe stehen
-        moved = False
-    else:
-        raise ValueError(f"Ungültige Zellfarbe: {target_cell_color}")
-
-    return next_state, reward, moved, is_done
-
-# --- SARSA Agent ---
-class SarsaAgent:
-    def __init__(self, states_shape, n_actions, alpha=0.05, gamma=0.99, epsilon=0.5, epsilon_decay=0.9995, epsilon_min=0.01):
-        self.n_actions = n_actions
-        # Q-Tabelle mit Dimensionen (rows, cols, num_actions)
-        self.q_table = np.zeros(states_shape + (n_actions,))
-        self.alpha = alpha
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_decay = epsilon_decay
-        self.epsilon_min = epsilon_min
+@dataclass
+class Board:
+    board_values: np.ndarray
+    start: tuple[int, int]
+    goal: tuple[int, int]
+class BaseAgent(ABC):
+    def __init__(self, board, config):
+        self.grid_rows = config.world.grid_rows
+        self.grid_cols = config.world.grid_cols
+        self.n_actions = len(Action)
+        self.alpha = config.agent.alpha
+        self.gamma = config.agent.gamma
+        self.epsilon = config.agent.epsilon
+        self.epsilon_decay = config.agent.epsilon_decay
+        self.epsilon_min = config.agent.epsilon_min
+        self.q_table = np.zeros((self.grid_rows, self.grid_cols, self.n_actions))
+        self.board_values = board.board_values #todo: confusing use of variable names
+        self.start = board.start
+        self.goal = board.goal
+        self.env = None
 
     def choose_action(self, state):
-        """Wählt die beste Aktion basierend auf den Q-Werten (gierig)."""
-        row, col = state
-        return np.argmax(self.q_table[row, col])
+        """Wählt eine Aktion basierend auf der aktuellen Q-Tabelle."""
+        return np.argmax(self.q_table[state])
 
     def choose_action_e_greedy(self, state):
-        """Wählt eine Aktion mittels Epsilon-Greedy-Strategie."""
-        row, col = state
-        if np.random.rand() < self.epsilon:
-            # Exploration: Wähle zufällige Aktion
-            return np.random.choice(self.n_actions)
-        else:
-            # Exploitation: Wähle beste bekannte Aktion
-            return np.argmax(self.q_table[row, col])
-
-    def update_q_table(self, state, action, reward, next_state, next_action):
-        """Aktualisiert die Q-Tabelle gemäß der SARSA-Update-Regel."""
-        row, col = state
-        next_row, next_col = next_state
-        current_q = self.q_table[row, col, action]
-        next_q = self.q_table[next_row, next_col, next_action]
-        target_q = reward + self.gamma * next_q
-        new_q = current_q + self.alpha * (target_q - current_q)
-        self.q_table[row, col, action] = new_q
+        """Wählt eine Aktion mit Epsilon-Greedy Strategie."""
+        if np.random.random() < self.epsilon:
+            return np.random.randint(self.n_actions)
+        return self.choose_action(state)
 
     def decay_epsilon(self):
-        """Reduziert Epsilon."""
+        """Reduziert Epsilon nach jeder Episode."""
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-def delete_old_episode_files():
-    """Löscht alle alten Board-Dateien mit Pfad aus vorherigen Episoden."""
-    files = glob.glob('board_with_path_*.npy')
-    for file in files:
-        try:
-            os.remove(file)
-            print(f"Gelöscht: {file}")
-        except Exception as e:
-            print(f"Fehler beim Löschen von {file}: {e}")
-
-def save_results(board, agent, visualization_path, detailed_path_steps, start_pos, goal_pos, output_file='board_with_path.npy'):
-    """
-    Speichert die Trainingsergebnisse in Dateien.
-    
-    Args:
-        board (np.ndarray): Das Spielfeld
-        agent (SarsaAgent): Der trainierte Agent
-        visualization_path (list): Liste der Zustände für die Visualisierung
-        detailed_path_steps (list): Liste der detaillierten Schritte (state, action, reward, next_state)
-        start_pos (tuple): Startposition
-        goal_pos (tuple): Zielposition
-        output_file (str): Name der Ausgabedatei für das Board mit Pfad
-    """
-    # Erstelle und speichere das Board mit dem Pfad
-    board_with_path = board.copy()
-    PATH_MARKER = 6  # Neue Konstante für den Pfad
-    # Verwende visualization_path für die Markierung auf dem Board
-    for r, c in visualization_path:
-        # Markiere Pfad nur auf erlaubten Feldern (Weiß, Grün), nicht Start/Ziel selbst
-        if (r, c) != start_pos and (r, c) != goal_pos and board_with_path[r, c] in [WHITE, GREEN]:
-            board_with_path[r, c] = PATH_MARKER
-
-    np.save(output_file, board_with_path)
-
-    # Speichere die Q-Tabelle
-    try:
-        q_table_to_save = agent.q_table
-
-        # Überprüfe die Dimensionen (sollte 16, 16, 4 sein)
-        if q_table_to_save.shape != (GRID_ROWS, GRID_COLS, len(ACTIONS)):
-            print(f"Warnung: Unerwartete Q-Tabellen-Dimension beim Speichern: {q_table_to_save.shape}")
-
-        # Speichere die Tabelle direkt
-        np.save('q_table_final.npy', q_table_to_save)
-    except Exception as e:
-        print(f"Fehler beim Speichern der Q-Tabelle: {e}")
-
-def print_path_details(episode_number, detailed_path_steps, total_path_reward):
-    """
-    Gibt die Details eines Pfades aus.
-    
-    Args:
-        episode_number (int): Nummer der Episode
-        detailed_path_steps (list or int): Liste der Schritte oder Anzahl der Schritte
-        total_path_reward (float): Gesamtreward des Pfades
-    """
-    if isinstance(detailed_path_steps, list):
-        steps = len(detailed_path_steps)
-    else:
-        steps = detailed_path_steps
-    print(f"{ANSI_RED}Val   {episode_number}, {steps} steps, Reward {total_path_reward}.{ANSI_RESET}")
-
-def find_optimal_path(agent, board, start_pos, goal_pos, max_steps_per_episode):
-    """
-    Findet den optimalen Pfad vom Start zum Ziel basierend auf den gelernten Q-Werten.
-    
-    Args:
-        agent (SarsaAgent): Der trainierte Agent
-        board (np.ndarray): Das Spielfeld
-        start_pos (tuple): Startposition
-        goal_pos (tuple): Zielposition
-        max_steps_per_episode (int): Maximale Anzahl von Schritten pro Episode
+    def calculate_optimal_path_based_on_qtable(self, board, start_pos, goal_pos, max_steps_per_episode, config: Config)-> Tuple[List[Tuple[int,int]], int]:
+        """
+        Validation based on  Q-values
         
-    Returns:
-        tuple: (visualization_path, detailed_path_steps, total_path_reward)
-            - visualization_path: Liste der Zustände für die Visualisierung
-            - detailed_path_steps: Liste der detaillierten Schritte (state, action, reward, next_state)
-            - total_path_reward: Gesamter Reward des Pfades
-    """
-    state = start_pos
-    visualization_path = [state]  # Path for saving to board_with_path.npy
-    detailed_path_steps = []      # List to store (state, action, reward, next_state) tuples
-    steps = 0
-    total_path_reward = 0
-
-    while state != goal_pos and steps < max_steps_per_episode:
-        current_state = state
-        # Beste Aktion wählen (gierig)
-        action = np.argmax(agent.q_table[current_state[0], current_state[1]])
-        # Nächsten Zustand und Reward holen
-        next_state, reward, _, is_done = step(current_state, action, board, goal_pos)
-
-        # Speichere den Schritt für die detaillierte Ausgabe
-        detailed_path_steps.append((current_state, action, reward, next_state))
-        # Speichere nur den Zustand für die Visualisierung
-        visualization_path.append(next_state)
-
-        total_path_reward += reward
-        state = next_state
-        steps += 1
-
-    return visualization_path, detailed_path_steps, total_path_reward
-
-def validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode_number):
-    """
-    Führt die Validierung des trainierten Agenten durch:
-    1. Findet den optimalen Pfad
-    2. Zeigt die Details des Pfades an
-    3. Speichert die Ergebnisse
-    
-    Args:
-        agent (SarsaAgent): Der trainierte Agent
-        board (np.ndarray): Das Spielfeld
-        start_pos (tuple): Startposition
-        goal_pos (tuple): Zielposition
-        max_steps_per_episode (int): Maximale Anzahl von Schritten pro Episode
-        episode_number (int, optional): Nummer der aktuellen Episode für die Dateibenennung
-    """
-    
-    # 1. Finde den optimalen Pfad
-    visualization_path, detailed_path_steps, total_path_reward = find_optimal_path(
-        agent, board, start_pos, goal_pos, max_steps_per_episode
-    )
-
-    # 2. Zeige die Details des Pfades an
-    print_path_details(episode_number, detailed_path_steps, total_path_reward)
-
-    # 3. Speichere die Ergebnisse
-    if episode_number is not None:
-        output_file = f'board_with_path_{episode_number+1:06d}.npy'
-    else:
-        output_file = 'board_with_path.npy'
-    
-    # Speichere die Q-Tabelle und das Board mit dem Pfad
-    save_results(board, agent, visualization_path, detailed_path_steps, start_pos, goal_pos, output_file)
-    
-
-def train(num_episodes=4000, max_steps_per_episode=500, validate_interval=100):
-    """
-    Trainiert den SARSA-Agenten.
-    
-    Args:
-        num_episodes (int): Anzahl der Trainings-Episoden (Standard: 1750)
-        max_steps_per_episode (int): Maximale Schritte pro Episode (Standard: 500)
-        validate_interval (int): Intervall für Validierung in Episoden (Standard: 100)
-    """
-    try:
-        # Ensure environment loads a 16x16 board
-        board, start_pos, goal_pos = load_environment()
-        if board.shape != (GRID_ROWS, GRID_COLS):
-             raise ValueError(f"Loaded board shape {board.shape} does not match GRID_ROWS/COLS ({GRID_ROWS},{GRID_COLS})")
-    except (FileNotFoundError, ValueError) as e:
-        print(f"Fehler beim Initialisieren der Umgebung: {e}")
-        return
-
-    # Lösche alte Episode-Dateien
-    print("\nLösche alte Episode-Dateien...")
-    delete_old_episode_files()
-
-    agent = SarsaAgent(states_shape=board.shape, n_actions=len(ACTIONS))
-
-    print(f"\nStarte Training über {num_episodes} Episoden (alpha={agent.alpha}, decay={agent.epsilon_decay}) für {GRID_ROWS}x{GRID_COLS} Grid...")
-
-    for episode in range(num_episodes):
-        state = start_pos
-        action = agent.choose_action_e_greedy(state)
-        total_reward = 0
-        steps = 0
-        if episode % validate_interval == 0:
-            # Führe Validierung vor jeder validate_interval-ten Episode durch, die erste Validierung erfolgt mit den initialen Q-Werten
-            validate(agent, board, start_pos, goal_pos, max_steps_per_episode, episode)
-        while steps < max_steps_per_episode:
+        Args:
+            board (np.ndarray): Das Spielfeld
+            start_pos (tuple): Startposition
+            goal_pos (tuple): Zielposition
+            max_steps_per_episode (int): Maximale Anzahl von Schritten pro Episode
             
-            steps += 1
-            next_state, reward, moved, is_done = step(state, action, board, goal_pos)
-            next_action = agent.choose_action(next_state) # Wichtig: Nächste Aktion für SARSA wählen
+        Returns:
+            tuple: (visualization_path, detailed_path_steps, total_path_reward)
+                - visualization_path: Liste der Zustände für die Visualisierung
+                - detailed_path_steps: Liste der detaillierten Schritte (state, action, reward, next_state)
+                - total_path_reward: Gesamter Reward des Pfades
+        """
+        state = start_pos
+        path = [state]  # Path for saving to board_with_path.npy
+        steps = 0
+        total_reward = 0
+        is_done = False
 
-            # Update Q-Tabelle
-            agent.update_q_table(state, action, reward, next_state, next_action)
-
+        while state != goal_pos and steps < max_steps_per_episode and not is_done:
+            current_state = state
+            # greedy take next action / best from q-table
+            action = np.argmax(self.q_table[current_state[0], current_state[1]])
+            # Nächsten Zustand und Reward holen
+            next_state, reward, _, is_done = self.apply_step(current_state, action, board, goal_pos, config)
+            path.append(next_state)
             total_reward += reward
             state = next_state
-            action = agent.choose_action_e_greedy(next_state) # Wichtig: Update für nächsten SARSA-Schritt mit epsilon-greedy
+            steps += 1
 
-            if is_done:
-                break # Ziel erreicht, Episode beendet
+        return path, total_reward
+    
+    def train(self, config: Config):
+        """
+        Trainiert den Agenten basierend auf der Konfiguration.
+        """
+        print(f"\nStarte Training über {config.training.num_episodes} Episoden (alpha={config.agent.alpha}, decay={config.agent.epsilon_decay}) für {config.world.grid_rows}x{config.world.grid_cols} Grid...")
 
-        agent.decay_epsilon() # Epsilon nach jeder Episode reduzieren
+        for episode in range(config.training.num_episodes):
+            state = self.start
+            action = self.choose_action_e_greedy(state)
+            total_reward = 0
+            steps = 0
 
-        if (episode ) % validate_interval == 0:
-            print(f"Train {episode}, {steps} steps, Reward: {total_reward}, Epsilon: {agent.epsilon:.4f}")
+            while steps < config.training.max_steps_per_episode:
+                steps += 1
+                next_state, reward, moved, is_done = self.apply_step(state, action, self.board_values, self.goal, config)
+                
+                if isinstance(self, QLearningAgent):
+                    next_action = self.choose_action_e_greedy(next_state)
+                    self.update_q_table(state, action, reward, next_state, next_action)
+                else:
+                    next_action = self.choose_action(next_state)
+                    self.update_q_table(state, action, reward, next_state, next_action)
 
-    print("\nTraining abgeschlossen.")
+                total_reward += reward
+                state = next_state
+                action = self.choose_action_e_greedy(next_state)
 
-    # Führe die finale Validierung durch
-    validate(agent, board, start_pos, goal_pos, max_steps_per_episode, num_episodes)
+                if is_done:
+                    break
+
+            self.decay_epsilon()
+
+            if (episode + 1) % config.training.validate_interval == 0:
+
+                self.validate(config, self.board_values, self.start, self.goal, config.training.max_steps_per_episode, episode, self.grid_rows, self.grid_cols)
+                print(f"train {episode + 1}, {steps} steps, Reward: {total_reward}, Epsilon: {self.epsilon:.4f}")
+
+        print("\nTraining abgeschlossen.")
+
+        # Führe die finale Validierung durch
+        self. validate(config, self.board_values, self.start, self.goal, config.training.max_steps_per_episode, episode, self.grid_rows, self.grid_cols)
+
+    def validate(self, config: Config, 
+                board: np.ndarray, 
+                start_pos: tuple[int,int],
+                goal_pos: tuple[int, int], 
+                max_steps_per_episode: int,
+                episode_number: int, 
+                grid_rows: int, grid_cols:int
+                ):
+        # 1. Finde den optimalen Pfad
+        path, total_reward = self.calculate_optimal_path_based_on_qtable( board, start_pos, goal_pos, max_steps_per_episode, config
+        )
+        print(f"validation Episode {episode_number+1}, {len(path)} steps, Reward {total_reward}.")
+        
+        # Speichere die Q-Tabelle und das Board mit dem Pfad
+        save_results(config, board, self, path, start_pos, goal_pos, episode_number)  
+
+    def apply_step(self, state, action, board, goal_pos, config: Config):
+        """
+        Executes an action in the 'state'.
+        Blue cells: Path ends here with rewards.invalid from the configuration (blue is water)
+        Black cells: Standard reward from the configuration but no movement
+        White cells: Standard reward from the configuration and movement
+        Green cells: Standard reward from the configuration and target reached (target is green)
+        Red cells: Standard reward from the configuration and movement (start field is red)
+
+        Args:
+            state (tuple): Current position (row, col).
+            action (int): Action to be executed (UP, DOWN, LEFT, RIGHT).
+            board (np.ndarray): The game board.
+            goal_pos (tuple): The target position.
+            config (Config): The agent's configuration.
+
+        Returns:
+            tuple: (next_state, reward, moved, is_done)
+                next_state (tuple): The position after the move (can be the same).
+                reward (int): The reward received.
+                moved (bool): Whether the agent actually moved.
+                is_done (bool): Whether the target was reached or an invalid state was entered.
+        """
+        row, col = state
+        # checks if action is in correct range
+        if action >= len(Action):
+            raise ValueError(f"Unknown action: {action}")
+        
+        d_row, d_col = Action[action].value
+        next_row, next_col = row + d_row, col + d_col
+
+        # Check if the next position is within the grid
+        if not (0 <= next_row < config.world.grid_rows and 0 <= next_col < config.world.grid_cols):
+            # Outside the grid -> Stay put, default reward
+            return state, config.rewards.default, False, False
+
+        target_cell_color = board[next_row][next_col]
+        reward = config.rewards.default
+        moved = False
+        is_done = False
+
+        if target_cell_color == GridState.INVALID:
+            reward = config.rewards.invalid
+            next_state = state # invalid field (water), end of path
+            is_done = True
+            moved = False
+        elif target_cell_color in [GridState.FREE, GridState.START, GridState.TARGET, GridState.VISITED]:
+            reward = config.rewards.default
+            next_state = (next_row, next_col) # next cell
+            moved = True
+            if next_state == goal_pos:
+                is_done = True # target reached, done
+        elif target_cell_color == GridState.WALL:
+            reward = config.rewards.default
+            next_state = state # stay on current cell but discount with default
+            moved = False
+        else:
+            raise ValueError(f"Invalid cell color: {target_cell_color}")
+
+        return next_state, reward, moved, is_done
+
+
+
+
+    @abstractmethod
+    def update_q_table(self, state, action, reward, next_state, next_action):
+        """Diese Methode wird von den Unterklassen implementiert."""
+        pass
+
+class SarsaAgent(BaseAgent):
+    def update_q_table(self, state, action, reward, next_state, next_action):
+        """SARSA Update: Q(s,a) = Q(s,a) + α[R + γQ(s',a') - Q(s,a)]"""
+        current_q = self.q_table[state][action]
+        next_q = self.q_table[next_state][next_action]
+        self.q_table[state][action] = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
+
+class QLearningAgent(BaseAgent):
+    def update_q_table(self, state, action, reward, next_state, next_action):
+        """Q-Learning Update: Q(s,a) = Q(s,a) + α[R + γ max_a' Q(s',a') - Q(s,a)]"""
+        current_q = self.q_table[state][action]
+        next_max_q = np.max(self.q_table[next_state])
+        self.q_table[state][action] = current_q + self.alpha * (reward + self.gamma * next_max_q - current_q)
+
+def agent_init(config: Config):
+    """Loads the board/world and start and goal position """
+    board, start, goal = load_board_and_find_start_goal(config)
+    board_obj = Board(board_values=board, start=start, goal=goal)
+    if config.agent.type == AgentType.SARSA:
+        agent = SarsaAgent(board_obj, config)
+        print("Verwende SARSA Agent")
+    elif config.agent.type == AgentType.Q_LEARNING:
+        agent = QLearningAgent(board_obj, config)
+        print("Verwende Q-Learning Agent")
+    else:
+        raise ValueError(f"Unbekannter Agent-Typ: {config.agent.type}. ")
+    return agent
+
 
 if __name__ == "__main__":
-    train() 
+
+    print("\nLade Konfiguration...")
+    config = load_config()
+
+    print("\nLösche alte Episoden- und Q-Value-Dateien...")
+    delete_old_files(config)
+
+    print("\nInitialisiere Agenten...")
+    agent = agent_init(config)
+
+    print("\nTrainiere Agenten...")
+    if config:
+        agent.train(config)

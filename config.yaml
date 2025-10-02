@@ -1,0 +1,32 @@
+
+# Agent-Parameters
+agent:
+  type: sarsa   # sarsa oder q-learning
+  alpha: 0.05   # default 0.05
+  gamma: 0.99  # default 0.99
+  epsilon: 0.5  # default 0.5
+  epsilon_decay: 0.9995 # default: 0.9995
+  epsilon_min: 0.01     # default: 0.1
+
+# size of our grid
+world:
+  grid_cols: 16
+  grid_rows: 16
+
+# Training-Konfiguration
+training:
+  num_episodes: 10000
+  max_steps_per_episode: 100
+  validate_interval: 100
+
+# Belohnungen
+rewards:
+  default: -10
+  invalid: -100000
+
+# Datei-Konfiguration
+files:
+  experiment_dir: "experiments"
+  board: "board.npy"
+  output_prefix: "board_with_path"
+  q_table_prefix: "q_table"
