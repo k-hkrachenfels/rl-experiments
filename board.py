@@ -19,7 +19,7 @@ class BoardEditorViewer:
         self.MARGIN = 20
         self.BUTTON_HEIGHT = 40
         self.WINDOW_WIDTH = self.BOARD_WIDTH + 2*self.MARGIN
-        self.WINDOW_HEIGHT = self.BOARD_HEIGHT + 2*self.MARGIN + 2*self.BUTTON_HEIGHT + 10  # Extra height for second button
+        self.WINDOW_HEIGHT = self.BOARD_HEIGHT + 4*self.MARGIN + 2*self.BUTTON_HEIGHT  # Space for board + top/middle/bottom margins + 2 buttons
 
         # Initialize Pygame
         pygame.init()

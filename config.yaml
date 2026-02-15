@@ -21,8 +21,8 @@ training:
 
 # Belohnungen
 rewards:
-  default: -10
-  invalid: -100000
+  default: -1
+  invalid: -100
 
 # Datei-Konfiguration
 files:

@@ -53,7 +53,7 @@ class BaseAgent(ABC):
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-    def calculate_optimal_path_based_on_qtable(self, board, start_pos, goal_pos, max_steps_per_episode, config: Config)-> Tuple[List[Tuple[int,int]], int]:
+    def calculate_optimal_path_based_on_qtable(self, board, start_pos, goal_pos, max_steps_per_episode, config: Config):
         """
         Validation based on  Q-values
         
@@ -64,29 +64,50 @@ class BaseAgent(ABC):
             max_steps_per_episode (int): Maximale Anzahl von Schritten pro Episode
             
         Returns:
-            tuple: (visualization_path, detailed_path_steps, total_path_reward)
+            tuple: (visualization_path, total_path_reward, detailed_path_steps)
                 - visualization_path: Liste der Zustände für die Visualisierung
-                - detailed_path_steps: Liste der detaillierten Schritte (state, action, reward, next_state)
                 - total_path_reward: Gesamter Reward des Pfades
+                - detailed_path_steps: Liste der detaillierten Schritte (pos_x, pos_y, action, reward_to_go)
         """
         state = start_pos
         path = [state]  # Path for saving to board_with_path.npy
         steps = 0
         total_reward = 0
         is_done = False
+        
+        detailed_path_steps = []
 
         while state != goal_pos and steps < max_steps_per_episode and not is_done:
             current_state = state
             # greedy take next action / best from q-table
-            action = np.argmax(self.q_table[current_state[0], current_state[1]])
+            action_idx = int(np.argmax(self.q_table[current_state[0], current_state[1]]))
+            action_name = Action[action_idx].name
+            
             # Nächsten Zustand und Reward holen
-            next_state, reward, _, is_done = self.apply_step(current_state, action, board, goal_pos, config)
+            next_state, reward, _, is_done = self.apply_step(current_state, action_idx, board, goal_pos, config)
+            
+            detailed_path_steps.append({
+                'num': steps,
+                'pos_x': current_state[0],
+                'pos_y': current_state[1],
+                'action': action_name,
+                'reward': reward
+            })
+            
             path.append(next_state)
             total_reward += reward
             state = next_state
             steps += 1
 
-        return path, total_reward
+        # Calculate reward_to_go (reverse accumulation)
+        current_rtg = 0.0
+        for i in range(len(detailed_path_steps) - 1, -1, -1):
+            current_rtg += detailed_path_steps[i]['reward']
+            detailed_path_steps[i]['reward_to_go'] = current_rtg
+            # Remove raw reward if not needed, or keep it. The schema uses reward_to_go.
+            # del detailed_path_steps[i]['reward'] 
+
+        return path, total_reward, detailed_path_steps
     
     def train(self, config: Config):
         """
@@ -139,12 +160,12 @@ class BaseAgent(ABC):
                 grid_rows: int, grid_cols:int
                 ):
         # 1. Finde den optimalen Pfad
-        path, total_reward = self.calculate_optimal_path_based_on_qtable( board, start_pos, goal_pos, max_steps_per_episode, config
+        path, total_reward, detailed_steps = self.calculate_optimal_path_based_on_qtable( board, start_pos, goal_pos, max_steps_per_episode, config
         )
         print(f"validation Episode {episode_number+1}, {len(path)} steps, Reward {total_reward}.")
         
         # Speichere die Q-Tabelle und das Board mit dem Pfad
-        save_results(config, board, self, path, start_pos, goal_pos, episode_number)  
+        save_results(config, board, self, path, start_pos, goal_pos, episode_number, detailed_steps)  
 
     def apply_step(self, state, action, board, goal_pos, config: Config):
         """

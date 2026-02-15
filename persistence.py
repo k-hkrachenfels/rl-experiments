@@ -1,7 +1,71 @@
 import numpy as np
 import os
 import glob
-from config import Config
+import pyarrow as pa
+import pyarrow.parquet as pq
+from config import Config, GridState
+
+# --- Parquet Schema Definitions ---
+
+# --- Ebene 4: Ein einzelner Schritt (Step) ---
+step_struct = pa.struct([
+    ('num', pa.int32()),
+    ('pos_x', pa.int16()),
+    ('pos_y', pa.int16()),
+    # Dictionary encoding für Actions ist effizient
+    ('action', pa.dictionary(pa.int8(), pa.string())), 
+    ('reward_to_go', pa.float32())
+])
+
+# --- Ebene 3: Die Welt (World) und die Episode ---
+
+# Das Grid: Eine Liste von Listen von Strings (2D Array)
+grid_type = pa.list_(pa.list_(pa.dictionary(pa.int8(), pa.string())))
+
+world_struct = pa.struct([
+    ('size_x', pa.int32()),
+    ('size_y', pa.int32()),
+    ('grid', grid_type)
+])
+
+episode_struct = pa.struct([
+    ('nr', pa.int32()),
+    # Eine Liste von Schritten
+    ('steps', pa.list_(step_struct)) 
+])
+
+# --- Ebene 2: Das Experiment ---
+experiment_struct = pa.struct([
+    ('world', world_struct),
+    ('episode', episode_struct),
+    ('q_table', pa.list_(pa.list_(pa.list_(pa.float32())))) # ROW x COL x ACTION_IDX
+])
+
+# --- Ebene 1: Das Parquet Schema (Die Tabelle hat eine Hauptspalte 'experiment') ---
+COMPLEX_SCHEMA = pa.schema([
+    ('experiment', experiment_struct)
+])
+
+def map_grid_to_strings(board):
+    """Maps integer grid values to string representations."""
+    mapping = {
+        0: 'free',     # Color.WHITE
+        1: 'wall',     # Color.BLACK
+        2: 'invalid',  # Color.BLUE
+        3: 'start',    # Color.GREEN
+        4: 'target',   # Color.RED
+        5: 'visited',  # Color.GRAY
+        6: 'path'      # PATH_MARKER
+    }
+    rows, cols = board.shape
+    grid_strings = []
+    for r in range(rows):
+        row_strings = []
+        for c in range(cols):
+            val = board[r, c]
+            row_strings.append(mapping.get(val, 'unknown'))
+        grid_strings.append(row_strings)
+    return grid_strings
 
 def save_board(config: Config, board_state):
     """
@@ -50,8 +114,8 @@ def load_board_and_find_start_goal(config: Config):
     goal = tuple(red_cells[0])
     return board, start, goal
 
-def save_results(config: Config, board, agent, visualization_path, start_pos, goal_pos, episode_number):
-    # Erstelle und speichere das Board mit dem Pfad
+def save_results(config: Config, board, agent, visualization_path, start_pos, goal_pos, episode_number, detailed_path_steps=None):
+    # Erstelle und speichere das Board mit dem Pfad (Legacy .npy)
     board_with_path = board.copy()
     PATH_MARKER = 6  # Neue Konstante für den Pfad
     # Verwende visualization_path für die Markierung auf dem Board
@@ -64,6 +128,37 @@ def save_results(config: Config, board, agent, visualization_path, start_pos, go
     board_with_path_file = f'{config.files.output_prefix}_{episode_number+1:06d}.npy'
     filepath = os.path.join(config.files.experiment_dir, board_with_path_file)
     np.save(filepath, board_with_path)
+
+    # Speichere Parquet Datei
+    if detailed_path_steps is not None:
+        try:
+            grid_strings = map_grid_to_strings(board) # Use original board for the world definition
+            
+            # Prepare data for Parquet
+            experiment_data = {
+                'world': {
+                    'size_x': config.world.grid_rows,
+                    'size_y': config.world.grid_cols,
+                    'grid': grid_strings
+                },
+                'episode': {
+                    'nr': episode_number + 1,
+                    'steps': detailed_path_steps
+                },
+                'q_table': agent.q_table.tolist()
+            }
+            
+            table = pa.Table.from_pydict({
+                'experiment': [experiment_data]
+            }, schema=COMPLEX_SCHEMA)
+            
+            parquet_filename = f'experiment_{episode_number+1:06d}.parquet'
+            parquet_filepath = os.path.join(config.files.experiment_dir, parquet_filename)
+            pq.write_table(table, parquet_filepath)
+            print(f"Parquet-Datei erfolgreich in '{parquet_filepath}' gespeichert.")
+            
+        except Exception as e:
+            print(f"Fehler beim Speichern der Parquet-Datei: {e}")
 
     # Speichere die Q-Tabelle
     try:
