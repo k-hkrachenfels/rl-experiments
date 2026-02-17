@@ -28,12 +28,14 @@ class TrainingConfig(BaseModel):
 class RewardsConfig(BaseModel):
     default: int
     invalid: int
+    wall: int 
 
 class FilesConfig(BaseModel):
     experiment_dir: str
     board: str
     output_prefix: str
     q_table_prefix: str
+    training_path_prefix: str
 
 class Color(IntEnum, metaclass=IndexableEnumMeta):
     """The board editor can display boards and edit/change cell states of the initial board"""

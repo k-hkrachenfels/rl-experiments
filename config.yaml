@@ -23,6 +23,7 @@ training:
 rewards:
   default: -1
   invalid: -100
+  wall: -10
 
 # Datei-Konfiguration
 files:
@@ -30,3 +31,4 @@ files:
   board: "board.npy"
   output_prefix: "board_with_path"
   q_table_prefix: "q_table"
+  training_path_prefix: "training_path_and_rewards"

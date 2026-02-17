@@ -223,3 +223,157 @@ You can view the Jupyter notebook directly:
 - **[View on nbviewer](https://nbviewer.org/github/YOUR_USERNAME/rl-experiments/blob/main/inspect.ipynb)** - Interactive notebook viewer (update with your GitHub username)
 
 For the nbviewer link to work, replace `YOUR_USERNAME` with your actual GitHub username once you push the repository.
+# Parquet Schema Visualization
+
+This document visualizes the hierarchical structure of the experiment data stored in Parquet format.
+
+## Schema Diagram
+
+```mermaid
+classDiagram
+    class Experiment {
+        +World world
+        +Episode episode
+        +list~list~list~float32~~~ q_table
+    }
+    
+    class World {
+        +int32 size_x
+        +int32 size_y
+        +list~list~string~~ grid
+    }
+    
+    class Episode {
+        +int32 nr
+        +list~Step~ steps
+    }
+    
+    class Step {
+        +int32 num
+        +int16 pos_x
+        +int16 pos_y
+        +dict~string~ action
+        +float32 reward
+        +float32 reward_to_go
+        +string strategy
+    }
+    
+    Experiment "1" *-- "1" World : contains
+    Experiment "1" *-- "1" Episode : contains
+    Episode "1" *-- "many" Step : contains
+```
+
+## Detailed Schema Structure
+
+### Root Level
+- **experiment** (struct) - Root container for all experiment data
+
+### Level 1: Experiment Components
+
+#### World
+Contains the maze/grid configuration:
+- **size_x** (int32) - Number of rows in the grid
+- **size_y** (int32) - Number of columns in the grid
+- **grid** (list<list<string>>) - 2D array of cell types
+  - Cell types: `free`, `wall`, `invalid`, `start`, `target`, `visited`, `path`
+
+#### Episode
+Contains episode-specific information:
+- **nr** (int32) - Episode number
+- **steps** (list<Step>) - Sequence of steps taken during the episode
+
+#### Q-Table
+- **q_table** (list<list<list<float32>>>) - 3D array [rows][cols][actions]
+  - Actions: [UP, RIGHT, DOWN, LEFT]
+
+### Level 2: Step Structure
+
+Each step in an episode contains:
+- **num** (int32) - Step number in sequence
+- **pos_x** (int16) - Row position on grid
+- **pos_y** (int16) - Column position on grid
+- **action** (dict<string>) - Action taken (dictionary encoded: UP/RIGHT/DOWN/LEFT)
+- **reward** (float32) - Immediate reward received for this action
+- **reward_to_go** (float32) - Cumulative reward from this step onwards
+- **strategy** (string) - Strategy used (e.g., 'greedy', 'random')
+
+## Data Types
+
+| Type | Description | Storage Size |
+|------|-------------|--------------|
+| int32 | 32-bit signed integer | 4 bytes |
+| int16 | 16-bit signed integer | 2 bytes |
+| int8 | 8-bit signed integer | 1 byte |
+| float32 | 32-bit floating point | 4 bytes |
+| string | Variable-length string | Variable |
+| dict | Dictionary encoding | Variable |
+| list | Variable-length list | Variable |
+
+## Example Data Flow
+
+```
+experiment_010000.parquet
+└── experiment
+    ├── world
+    │   ├── size_x: 16
+    │   ├── size_y: 16
+    │   └── grid: [["free", "wall", ...], [...], ...]
+    ├── episode
+    │   ├── nr: 10000
+    │   └── steps: [
+    │       ├── {num: 0, pos_x: 0, pos_y: 0, action: "RIGHT", reward: -1.0, strategy: "greedy", reward_to_go: -27.0}
+    │       ├── {num: 1, pos_x: 0, pos_y: 1, action: "DOWN", reward: -1.0, strategy: "random", reward_to_go: -26.0}
+    │       └── ...
+    │   ]
+    └── q_table: [[[q0,q1,q2,q3], ...], [...], ...]
+```
+
+## Alternative Visualizations
+
+### PlantUML Format
+
+For rendering with PlantUML tools:
+
+```plantuml
+@startuml
+object Experiment {
+  world : World
+  episode : Episode
+  q_table : float[][][]
+}
+
+object World {
+  size_x : int32
+  size_y : int32
+  grid : string[][]
+}
+
+object Episode {
+  nr : int32
+  steps : Step[]
+}
+
+object Step {
+  num : int32
+  pos_x : int16
+  pos_y : int16
+  action : string
+  reward : float32
+  reward_to_go : float32
+  strategy : string
+}
+
+Experiment *-- World
+Experiment *-- Episode
+Episode *-- Step
+@enduml
+```
+
+## Benefits of This Schema
+
+1. **Hierarchical Organization** - Natural nesting matches the semantic structure
+2. **Space Efficiency** - Dictionary encoding for repeated strings
+3. **Type Safety** - Explicit types prevent data corruption
+4. **Nested Arrays** - Q-table stored as native 3D array
+5. **Self-Describing** - Schema embedded in the file
+6. **Queryable** - DuckDB can query nested structures directly

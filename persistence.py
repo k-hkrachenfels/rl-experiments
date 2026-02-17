@@ -14,11 +14,12 @@ step_struct = pa.struct([
     ('pos_y', pa.int16()),
     # Dictionary encoding für Actions ist effizient
     ('action', pa.dictionary(pa.int8(), pa.string())), 
-    ('reward_to_go', pa.float32())
+    ('reward_to_go', pa.float32()),
+    ('reward', pa.float32()),
+    ('strategy', pa.string())
 ])
 
 # --- Ebene 3: Die Welt (World) und die Episode ---
-
 # Das Grid: Eine Liste von Listen von Strings (2D Array)
 grid_type = pa.list_(pa.list_(pa.dictionary(pa.int8(), pa.string())))
 
@@ -31,7 +32,8 @@ world_struct = pa.struct([
 episode_struct = pa.struct([
     ('nr', pa.int32()),
     # Eine Liste von Schritten
-    ('steps', pa.list_(step_struct)) 
+    ('steps', pa.list_(step_struct)),
+    ('mode', pa.string())
 ])
 
 # --- Ebene 2: Das Experiment ---
@@ -114,16 +116,48 @@ def load_board_and_find_start_goal(config: Config):
     goal = tuple(red_cells[0])
     return board, start, goal
 
+
+def save_parquet_path(config: Config, episode_number, detailed_path_steps):
+
+    file_name = f'{config.files.training_path_prefix}_{episode_number+1:06d}.npy'
+    filepath = os.path.join(config.files.experiment_dir, file_name)
+    try:
+
+        
+        # Prepare data for Parquet
+        experiment_data = {
+            'world': {
+                'size_x': config.world.grid_rows,
+                'size_y': config.world.grid_cols,
+                
+            },
+            'episode': {
+                'nr': episode_number + 1,
+                'steps': detailed_path_steps,
+                'mode': 'train'
+            },
+        }
+        
+        table = pa.Table.from_pydict({
+            'experiment': [experiment_data]
+        }, schema=COMPLEX_SCHEMA)
+        
+        parquet_filename = f'experiment_{episode_number+1:06d}.parquet'
+        parquet_filepath = os.path.join(config.files.experiment_dir, parquet_filename)
+        pq.write_table(table, parquet_filepath)
+        print(f"Parquet-Datei erfolgreich in '{parquet_filepath}' gespeichert.")
+        
+    except Exception as e:
+        print(f"Fehler beim Speichern der Parquet-Datei: {e}")
+
+
+
 def save_results(config: Config, board, agent, visualization_path, start_pos, goal_pos, episode_number, detailed_path_steps=None):
-    # Erstelle und speichere das Board mit dem Pfad (Legacy .npy)
+    # Erstelle und speichere das Board mit dem Pfad 
     board_with_path = board.copy()
-    PATH_MARKER = 6  # Neue Konstante für den Pfad
     # Verwende visualization_path für die Markierung auf dem Board
     for r, c in visualization_path:
-        # Markiere Pfad nur auf erlaubten Feldern (Weiß, Grün), nicht Start/Ziel selbst
-        if (r, c) != start_pos and (r, c) != goal_pos and board_with_path[r, c] in [0, 3]: # 0 is WHITE, 3 is GREEN
-            board_with_path[r, c] = PATH_MARKER
-
+        board_with_path[r, c] = GridState.VISITED
 
     board_with_path_file = f'{config.files.output_prefix}_{episode_number+1:06d}.npy'
     filepath = os.path.join(config.files.experiment_dir, board_with_path_file)
@@ -139,11 +173,13 @@ def save_results(config: Config, board, agent, visualization_path, start_pos, go
                 'world': {
                     'size_x': config.world.grid_rows,
                     'size_y': config.world.grid_cols,
-                    'grid': grid_strings
+                    'grid': grid_strings,
+                    
                 },
                 'episode': {
                     'nr': episode_number + 1,
-                    'steps': detailed_path_steps
+                    'steps': detailed_path_steps,
+                    'mode': 'validate'
                 },
                 'q_table': agent.q_table.tolist()
             }
@@ -251,22 +287,20 @@ def load_all_path_files(config: Config):
 
 def load_editor_viewer_data(config: Config):
     """
-    Lädt Board und Q-Tabelle für Editor/Viewer (16x16).
-    Prioritisiert Pfad-Datei für initialen Board-View.
+    Load board 
     """
-    board_state = None
+    # Always load the clean board first for editing
+    board_state = load_board(config)
     path_loaded = False
     q_table = None
     path_files = load_all_path_files(config)
 
-    if board_state is None:
-        board_state = load_board(config)
-        
     if path_files:
         print(f"Gefundene Pfad-Dateien: {len(path_files)}")
         for episode_num, file in path_files.items():
             print(f"  Episode {episode_num}: {file}")
         
+        # Load Q-table from first episode for initial display
         first_episode = min(path_files.keys())
         first_path_file, first_q_file = path_files[first_episode]
         print(f"\nLade erste Pfad-Datei: {first_path_file}")
@@ -298,7 +332,7 @@ def load_path_file(config: Config, file_path):
             # Erstelle eine Kopie des Original-Boards
             original_board = load_board(config)
             # Setze nur die Pfadmarker (6) auf dem Original-Board
-            board_state = np.where(loaded_board == 6, 6, original_board)
+            board_state = np.where(loaded_board == GridState.VISITED, GridState.VISITED, original_board)
             return board_state
         else:
             print(f"Warnung: Pfad-Board hat falsche Dimensionen ({loaded_board.shape}).")

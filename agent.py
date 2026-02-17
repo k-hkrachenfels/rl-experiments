@@ -6,11 +6,11 @@ from abc import ABC, abstractmethod
 from config import Config, load_config, AgentType, GridState
 from dataclasses import dataclass
 from enum import Enum
-from persistence import load_board_and_find_start_goal, save_results, delete_old_files
+from persistence import load_board_and_find_start_goal, save_results, delete_old_files, save_path, save_parquet_path
 from typing import Tuple, List
 from util import IndexableEnumMeta
 
-# an Enum that also supports indexing and applying len (by using specific metaclass)
+# an Enum that also supports indexing and using logic like: for action in Action
 class Action(Enum, metaclass=IndexableEnumMeta):
     UP    = (-1, 0)
     RIGHT = (0, 1)
@@ -22,6 +22,12 @@ class Board:
     board_values: np.ndarray
     start: tuple[int, int]
     goal: tuple[int, int]
+
+class Strategy(Enum, metaclass=IndexableEnumMeta):
+    EPSILON = 'epsilon'
+    GREEDY = 'greedy'
+
+
 class BaseAgent(ABC):
     def __init__(self, board, config):
         self.grid_rows = config.world.grid_rows
@@ -32,6 +38,7 @@ class BaseAgent(ABC):
         self.epsilon = config.agent.epsilon
         self.epsilon_decay = config.agent.epsilon_decay
         self.epsilon_min = config.agent.epsilon_min
+        self.epsilon_min = config.agent.epsilon_min
         self.q_table = np.zeros((self.grid_rows, self.grid_cols, self.n_actions))
         self.board_values = board.board_values #todo: confusing use of variable names
         self.start = board.start
@@ -39,142 +46,23 @@ class BaseAgent(ABC):
         self.env = None
 
     def choose_action(self, state):
-        """Wählt eine Aktion basierend auf der aktuellen Q-Tabelle."""
+        """Q-Value based action selection"""
         return np.argmax(self.q_table[state])
 
     def choose_action_e_greedy(self, state):
-        """Wählt eine Aktion mit Epsilon-Greedy Strategie."""
+        """Epsilon-Greedy action selection"""
         if np.random.random() < self.epsilon:
-            return np.random.randint(self.n_actions)
-        return self.choose_action(state)
+            return np.random.randint(self.n_actions),Strategy.EPSILON
+        return self.choose_action(state),Strategy.GREEDY
 
-    def decay_epsilon(self):
-        """Reduziert Epsilon nach jeder Episode."""
+    def decay_epsilon(self):    
+        """reduce epsilon after each episode"""
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-
-    def calculate_optimal_path_based_on_qtable(self, board, start_pos, goal_pos, max_steps_per_episode, config: Config):
-        """
-        Validation based on  Q-values
-        
-        Args:
-            board (np.ndarray): Das Spielfeld
-            start_pos (tuple): Startposition
-            goal_pos (tuple): Zielposition
-            max_steps_per_episode (int): Maximale Anzahl von Schritten pro Episode
-            
-        Returns:
-            tuple: (visualization_path, total_path_reward, detailed_path_steps)
-                - visualization_path: Liste der Zustände für die Visualisierung
-                - total_path_reward: Gesamter Reward des Pfades
-                - detailed_path_steps: Liste der detaillierten Schritte (pos_x, pos_y, action, reward_to_go)
-        """
-        state = start_pos
-        path = [state]  # Path for saving to board_with_path.npy
-        steps = 0
-        total_reward = 0
-        is_done = False
-        
-        detailed_path_steps = []
-
-        while state != goal_pos and steps < max_steps_per_episode and not is_done:
-            current_state = state
-            # greedy take next action / best from q-table
-            action_idx = int(np.argmax(self.q_table[current_state[0], current_state[1]]))
-            action_name = Action[action_idx].name
-            
-            # Nächsten Zustand und Reward holen
-            next_state, reward, _, is_done = self.apply_step(current_state, action_idx, board, goal_pos, config)
-            
-            detailed_path_steps.append({
-                'num': steps,
-                'pos_x': current_state[0],
-                'pos_y': current_state[1],
-                'action': action_name,
-                'reward': reward
-            })
-            
-            path.append(next_state)
-            total_reward += reward
-            state = next_state
-            steps += 1
-
-        # Calculate reward_to_go (reverse accumulation)
-        current_rtg = 0.0
-        for i in range(len(detailed_path_steps) - 1, -1, -1):
-            current_rtg += detailed_path_steps[i]['reward']
-            detailed_path_steps[i]['reward_to_go'] = current_rtg
-            # Remove raw reward if not needed, or keep it. The schema uses reward_to_go.
-            # del detailed_path_steps[i]['reward'] 
-
-        return path, total_reward, detailed_path_steps
-    
-    def train(self, config: Config):
-        """
-        Trainiert den Agenten basierend auf der Konfiguration.
-        """
-        print(f"\nStarte Training über {config.training.num_episodes} Episoden (alpha={config.agent.alpha}, decay={config.agent.epsilon_decay}) für {config.world.grid_rows}x{config.world.grid_cols} Grid...")
-
-        for episode in range(config.training.num_episodes):
-            state = self.start
-            action = self.choose_action_e_greedy(state)
-            total_reward = 0
-            steps = 0
-
-            while steps < config.training.max_steps_per_episode:
-                steps += 1
-                next_state, reward, moved, is_done = self.apply_step(state, action, self.board_values, self.goal, config)
-                
-                if isinstance(self, QLearningAgent):
-                    next_action = self.choose_action_e_greedy(next_state)
-                    self.update_q_table(state, action, reward, next_state, next_action)
-                else:
-                    next_action = self.choose_action(next_state)
-                    self.update_q_table(state, action, reward, next_state, next_action)
-
-                total_reward += reward
-                state = next_state
-                action = self.choose_action_e_greedy(next_state)
-
-                if is_done:
-                    break
-
-            self.decay_epsilon()
-
-            if (episode + 1) % config.training.validate_interval == 0:
-
-                self.validate(config, self.board_values, self.start, self.goal, config.training.max_steps_per_episode, episode, self.grid_rows, self.grid_cols)
-                print(f"train {episode + 1}, {steps} steps, Reward: {total_reward}, Epsilon: {self.epsilon:.4f}")
-
-        print("\nTraining abgeschlossen.")
-
-        # Führe die finale Validierung durch
-        self. validate(config, self.board_values, self.start, self.goal, config.training.max_steps_per_episode, episode, self.grid_rows, self.grid_cols)
-
-    def validate(self, config: Config, 
-                board: np.ndarray, 
-                start_pos: tuple[int,int],
-                goal_pos: tuple[int, int], 
-                max_steps_per_episode: int,
-                episode_number: int, 
-                grid_rows: int, grid_cols:int
-                ):
-        # 1. Finde den optimalen Pfad
-        path, total_reward, detailed_steps = self.calculate_optimal_path_based_on_qtable( board, start_pos, goal_pos, max_steps_per_episode, config
-        )
-        print(f"validation Episode {episode_number+1}, {len(path)} steps, Reward {total_reward}.")
-        
-        # Speichere die Q-Tabelle und das Board mit dem Pfad
-        save_results(config, board, self, path, start_pos, goal_pos, episode_number, detailed_steps)  
 
     def apply_step(self, state, action, board, goal_pos, config: Config):
         """
         Executes an action in the 'state'.
-        Blue cells: Path ends here with rewards.invalid from the configuration (blue is water)
-        Black cells: Standard reward from the configuration but no movement
-        White cells: Standard reward from the configuration and movement
-        Green cells: Standard reward from the configuration and target reached (target is green)
-        Red cells: Standard reward from the configuration and movement (start field is red)
 
         Args:
             state (tuple): Current position (row, col).
@@ -185,10 +73,10 @@ class BaseAgent(ABC):
 
         Returns:
             tuple: (next_state, reward, moved, is_done)
-                next_state (tuple): The position after the move (can be the same).
-                reward (int): The reward received.
-                moved (bool): Whether the agent actually moved.
-                is_done (bool): Whether the target was reached or an invalid state was entered.
+            next_state (tuple): The position after the move (can be the same).
+            reward (int): The reward received.
+            moved (bool): Whether the agent actually moved.
+            is_done (bool): Whether the target was reached or an invalid state was entered.
         """
         row, col = state
         # checks if action is in correct range
@@ -213,15 +101,16 @@ class BaseAgent(ABC):
             next_state = state # invalid field (water), end of path
             is_done = True
             moved = False
-        elif target_cell_color in [GridState.FREE, GridState.START, GridState.TARGET, GridState.VISITED]:
+        elif target_cell_color in [GridState.FREE, GridState.START, GridState.TARGET, GridState.VISITED, 6]:
+            # Treat 6 (legacy path marker) same as visited/free
             reward = config.rewards.default
             next_state = (next_row, next_col) # next cell
             moved = True
             if next_state == goal_pos:
                 is_done = True # target reached, done
         elif target_cell_color == GridState.WALL:
-            reward = config.rewards.default
-            next_state = state # stay on current cell but discount with default
+            reward = config.rewards.wall
+            next_state = state # stay on current cell but discount 
             moved = False
         else:
             raise ValueError(f"Invalid cell color: {target_cell_color}")
@@ -229,8 +118,139 @@ class BaseAgent(ABC):
         return next_state, reward, moved, is_done
 
 
+    def greedy_optimal_path(self, board, start_pos, goal_pos, max_steps_per_episode, config: Config):
+        """Greedy optimal path based on Q-Values: choose all actions based on Q-Values.
+        Do so until limit of max_steps_per_episode is reached or goal is reached or field with GridState.INVALID is reached (per default config symbolized by blue color = water)
+        
+        Args:
+            board (np.ndarray): the board
+            start_pos (tuple): start position
+            goal_pos (tuple): goal position
+            max_steps_per_episode (int): max steps per episode
+            
+        Returns:
+            tuple: (visualization_path, total_path_reward, detailed_path_steps)
+                - visualization_path: list of states for visualization
+                - total_path_reward: total reward of the path
+                - detailed_path_steps: list of detailed steps (pos_x, pos_y, action, reward_to_go)
+        """
+        next_state = start_pos
+        path = [next_state]  # Path for saving to board_with_path.npy
+        steps = 0
+        total_reward = 0
+        is_done = False
+        
+        detailed_path_steps = []
 
+        while next_state != goal_pos and steps < max_steps_per_episode and not is_done:
+            current_state = next_state
+            # greedy take next action / best from q-table
+            action_idx = int(np.argmax(self.q_table[current_state]))
+            action_name = Action[action_idx].name
+            
+            # Nächsten Zustand und Reward holen
+            next_state, reward, _, is_done = self.apply_step(current_state, action_idx, board, goal_pos, config)
+            if reward != -1:
+                print("-")
+            
+            # remember steps for later logging and reward_to_go calculation
+            detailed_path_steps.append({
+                'mode': "validate",
+                'num': steps,
+                'pos_x': current_state[0],
+                'pos_y': current_state[1],
+                'action': action_name,
+                'reward': reward,
+                'strategy': Strategy.GREEDY.value
+            })
+            
+            path.append(next_state)
+            total_reward += reward
+            steps += 1
 
+        # Calculate reward_to_go (=reward till end of path = reverse accumulation)
+        current_rtg = 0.0
+        for i in range(len(detailed_path_steps) - 1, -1, -1):
+            current_rtg += detailed_path_steps[i]['reward']
+            detailed_path_steps[i]['reward_to_go'] = current_rtg
+            
+        return path, total_reward, detailed_path_steps
+    
+    def train(self, config: Config):
+        """
+        Train the agent based on the configuration.
+        """
+        print(f"\nStarte Training über {config.training.num_episodes} Episoden (alpha={config.agent.alpha}, decay={config.agent.epsilon_decay}) für {config.world.grid_rows}x{config.world.grid_cols} Grid...")
+
+        for episode in range(config.training.num_episodes):
+            state = self.start
+            action, strategy = self.choose_action_e_greedy(state)
+            total_reward = 0
+            steps = 0
+            detailed_path_steps = []
+            while steps < config.training.max_steps_per_episode:
+                steps += 1
+                next_state, reward, moved, is_done = self.apply_step(state, action, self.board_values, self.goal, config)
+                
+                if isinstance(self, QLearningAgent):
+                    next_action,strategy = self.choose_action_e_greedy(next_state)
+                    self.update_q_table(state, action, reward, next_state, next_action)
+                else:
+                    next_action,strategy = self.choose_action_e_greedy(next_state)
+                    self.update_q_table(state, action, reward, next_state, next_action)
+
+                total_reward += reward
+                state = next_state
+                action,strategy = self.choose_action_e_greedy(next_state)
+
+                # remember steps for later logging and reward_to_go calculation
+                detailed_path_steps.append({
+                    'mode': "train",
+                    'num': steps,
+                    'pos_x': state[0],
+                    'pos_y': state[1],
+                    'action': Action[action].name,
+                    'reward': reward,
+                    'strategy':strategy.value
+                })
+                
+                #save_parquet_path(config, episode, detailed_path_steps) 
+                if is_done:
+                    break
+
+            self.decay_epsilon()
+
+            if (episode + 1) % config.training.validate_interval == 0:
+
+                self.validate(config, self.board_values, self.start, self.goal, config.training.max_steps_per_episode, episode, self.grid_rows, self.grid_cols)
+                print(f"train {episode + 1}, {steps} steps, Reward: {total_reward}, Epsilon: {self.epsilon:.4f}")
+
+        print("\nTraining abgeschlossen.")
+
+    
+        self. validate(config, self.board_values, self.start, self.goal, config.training.max_steps_per_episode, episode, self.grid_rows, self.grid_cols)
+
+    def validate(self, config: Config, 
+                board: np.ndarray, 
+                start_pos: tuple[int,int],
+                goal_pos: tuple[int, int], 
+                max_steps_per_episode: int,
+                episode_number: int, 
+                grid_rows: int, grid_cols:int
+                ):
+        """
+        Greedy optimal path based on Q-Values: choose all actions based on Q-Values.
+        Also log and save the path to a file.
+        """
+        # 1. Finde den optimalen Pfad
+        path, total_reward, detailed_steps = self.greedy_optimal_path( board, start_pos, goal_pos, max_steps_per_episode, config
+        )
+        print(f"validation Episode {episode_number+1}, {len(path)} steps, Reward {total_reward}.")
+        
+        # Speichere die Q-Tabelle und das Board mit dem Pfad
+        save_results(config, board, self, path, start_pos, goal_pos, episode_number, detailed_steps)  
+
+    
     @abstractmethod
     def update_q_table(self, state, action, reward, next_state, next_action):
         """Diese Methode wird von den Unterklassen implementiert."""
