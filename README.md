@@ -135,30 +135,31 @@ You can view the Jupyter notebook directly:
 ```mermaid
 classDiagram
     class Experiment {
-        +World world
-        +Episode episode
-        +list~list~list~float32~~~ q_table
+        +World world : world configuration
+        +Episode episode : episode information
+        +list~list~list~float32~~~ q_table : q-table of the agent
     }
     
     class World {
-        +int32 size_x
-        +int32 size_y
-        +list~list~string~~ grid
+        +int32 size_x : size of the board in x direction
+        +int32 size_y : size of the board in y direction
+        +list~list~string~~ grid : grid of the board
     }
     
     class Episode {
-        +int32 nr
-        +list~Step~ steps
+        +int32 nr : episode number
+        +list~Step~ steps : list of steps in episode
+        +string mode : train or validate
     }
     
     class Step {
-        +int32 num
-        +int16 pos_x
-        +int16 pos_y
-        +dict~string~ action
-        +float32 reward
-        +float32 reward_to_go
-        +string strategy
+        +int32 num :  step number in episode
+        +int16 pos_x : x coordinate of agent
+        +int16 pos_y : y coordinate of agent
+        +dict~string~ action : up,down,left,right
+        +float32 reward : reward for this step
+        +float32 reward_to_go : reward accumulated till end of episode
+        +string strategy : greedy or epsilon step
     }
     
     Experiment "1" *-- "1" World : contains
