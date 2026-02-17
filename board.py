@@ -26,7 +26,7 @@ class BoardEditorViewer:
 
         # Create the window
         self.screen = pygame.display.set_mode((self.WINDOW_WIDTH, self.WINDOW_HEIGHT))
-        pygame.display.set_caption("Board Editor/Viewer with Q-Values (16x16)")
+        pygame.display.set_caption("Board Viewer")
 
         # Setup mode flag (True = setup mode, False = view mode)
         self.setup_mode = False

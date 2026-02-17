@@ -40,7 +40,8 @@ episode_struct = pa.struct([
 experiment_struct = pa.struct([
     ('world', world_struct),
     ('episode', episode_struct),
-    ('q_table', pa.list_(pa.list_(pa.list_(pa.float32())))) # ROW x COL x ACTION_IDX
+    ('q_table', pa.list_(pa.list_(pa.list_(pa.float32())))), # ROW x COL x ACTION_IDX
+    ('config', pa.string())
 ])
 
 # --- Ebene 1: Das Parquet Schema (Die Tabelle hat eine Hauptspalte 'experiment') ---
@@ -117,6 +118,7 @@ def load_board_and_find_start_goal(config: Config):
     return board, start, goal
 
 
+# used in training loop to save the path of each episode
 def save_parquet_path(config: Config, episode_number, detailed_path_steps):
 
     file_name = f'{config.files.training_path_prefix}_{episode_number+1:06d}.npy'
@@ -136,6 +138,7 @@ def save_parquet_path(config: Config, episode_number, detailed_path_steps):
                 'steps': detailed_path_steps,
                 'mode': 'train'
             },
+
         }
         
         table = pa.Table.from_pydict({
@@ -181,7 +184,8 @@ def save_results(config: Config, board, agent, visualization_path, start_pos, go
                     'steps': detailed_path_steps,
                     'mode': 'validate'
                 },
-                'q_table': agent.q_table.tolist()
+                'q_table': agent.q_table.tolist(),
+                'config': str(config) # TODO: change parquet structure, so that config is not repeated for each episode, i.e. write extra files at beginning of experiment that contain the config but based on the schema
             }
             
             table = pa.Table.from_pydict({

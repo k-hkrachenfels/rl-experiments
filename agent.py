@@ -214,9 +214,13 @@ class BaseAgent(ABC):
                     'strategy':strategy.value
                 })
                 
-                #save_parquet_path(config, episode, detailed_path_steps) 
+
                 if is_done:
                     break
+
+                            # log training path based on config setting
+            if config.training.log_training_path:
+                save_parquet_path(config, episode, detailed_path_steps) 
 
             self.decay_epsilon()
 

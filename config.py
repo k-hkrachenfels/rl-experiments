@@ -24,11 +24,13 @@ class TrainingConfig(BaseModel):
     num_episodes: int
     max_steps_per_episode: int
     validate_interval: int
+    log_training_path: bool
 
 class RewardsConfig(BaseModel):
     default: int
     invalid: int
     wall: int 
+    
 
 class FilesConfig(BaseModel):
     experiment_dir: str
